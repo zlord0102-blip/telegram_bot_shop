@@ -1,5 +1,6 @@
 from keyboards import user_reply_keyboard
 from database import get_setting, get_ui_flags as _get_ui_flags
+from locales import get_text
 
 
 async def get_ui_flags() -> dict:
@@ -28,6 +29,33 @@ async def get_shop_page_size(default: int = 10) -> int:
         return _parse_shop_page_size(raw_value, default=default)
     except Exception:
         return default
+
+
+def _normalize_message_block(raw_value: str, fallback: str) -> str:
+    text = str(raw_value or "").strip()
+    return text if text else fallback
+
+
+async def get_shop_menu_text(lang: str) -> str:
+    fallback = get_text(lang, "select_product")
+    try:
+        raw_value = await get_setting("shop_intro_text", "")
+    except Exception:
+        raw_value = ""
+    return _normalize_message_block(raw_value, fallback)
+
+
+async def get_support_panel_text(lang: str) -> str:
+    fallback = (
+        "💬 HỖ TRỢ\n\nNhấn nút bên dưới để liên hệ hỗ trợ:"
+        if lang != "en"
+        else "💬 SUPPORT\n\nTap a button below to contact support:"
+    )
+    try:
+        raw_value = await get_setting("support_panel_text", "")
+    except Exception:
+        raw_value = ""
+    return _normalize_message_block(raw_value, fallback)
 
 
 async def is_feature_enabled(key: str) -> bool:

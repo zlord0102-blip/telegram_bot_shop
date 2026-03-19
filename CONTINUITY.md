@@ -199,6 +199,21 @@ Goal: Improve Admin Dashboard and sales operations, including dynamic pricing/pr
   - `Gửi tất cả` should use a real confirm modal instead of browser `confirm()`.
 - Current scope add-on (latest request): full Dashboard mobile responsiveness:
   - Make the admin dashboards usable on mobile across all tabs by improving shared shell/nav behavior and global layout responsiveness for forms, cards, tables, and modal-heavy pages.
+- Current scope add-on (latest request): reduce Bot Dashboard perceived API latency on `Dashboard` and `Users` tabs:
+  - Investigate why internal fetches still take about 1 second.
+  - Prioritize removing avoidable auth round-trips and avoiding server-side full-table scans in analytics fallbacks.
+- Current scope add-on (latest request): inspect remaining slow server response on `dashboard` request from browser timing:
+  - Screenshot shows `Waiting for server response` around 2.66s on the `dashboard` network entry.
+  - Need to distinguish route/auth/database time explicitly and add another practical mitigation for repeated admin loads.
+- Current scope add-on (latest request): Bot Dashboard `Users` order-history drill-down:
+  - Clicking a user's `Đơn đã mua` count should open the full list of that user's purchased orders with details.
+  - Reuse the current Bot admin analytics/auth path rather than raw browser-side Supabase scans.
+- Current scope add-on (latest request): Bot intro/support text + Users filter refinement:
+  - Telegram bot product-selection screen should show an extra configurable text block above/beside the category/product buttons; the text must be editable from Bot Dashboard Settings.
+  - Tapping `Hỗ trợ` should show an extra configurable support-text block similar to the provided sample; the text must be editable from Bot Dashboard Settings.
+  - Bot Dashboard `Users` page should support richer filter/sort modes such as username A-Z/Z-A, users with revenue, and revenue ascending/descending.
+- Current scope add-on (latest request): Bot `Users` order-history modal usability hotfix:
+  - The modal opened by clicking `Đơn đã mua` is currently trapping the screen when content is long; it needs bounded height and internal scrolling so admins can close/interact with it reliably.
 
 Success Criteria:
 - Existing completed behaviors remain working:
@@ -258,6 +273,11 @@ Success Criteria:
 - `Mô tả` multiline support should not stretch all other inputs in the add form.
 - Website Product data model should treat only stock as shared cross-channel; all merchandising fields for Website are channel-specific.
 - Provide a code-grounded analysis that explains the current Bot Dashboard structure, data flow, operational pages, and integration points without changing behavior.
+- `Dashboard` and `Users` tabs should feel materially faster on first data load by trimming unnecessary internal API latency and expensive fallback scans.
+- Browser DevTools timing for the admin analytics routes should expose whether time is spent in auth, analytics/query work, and cache hit/miss.
+- `Users` page should support drilling from per-user order count into that user's full purchased-order history without leaving the page.
+- Telegram bot should support dashboard-configurable intro text on the product-selection screen and dashboard-configurable detail text in the support panel.
+- Bot Dashboard `Users` page should support richer filter/sort controls for username/order/revenue-oriented admin review.
 
 Constraints/Assumptions:
 - Work within this repo only.
@@ -354,6 +374,10 @@ Key Decisions:
     - centralize duplicated order/user/product enrichment logic,
     - improve transactionality/locking around stock + fulfillment paths,
     - reduce large client-side scans/aggregations on dashboard pages,
+- Latest latency-reduction decision for `Dashboard` / `Users`:
+  - Cut one internal auth round-trip by checking `admin_users` directly with the bearer-token Supabase client instead of calling `auth.getUser(...)` first on every analytics request.
+  - Keep Dashboard/Users on RPC-first analytics paths, but add a lightweight client promise/TTL cache to dedupe duplicate fetches in navigation/dev Strict Mode.
+  - Replace the Bot Users snapshot path with a paginated/searchable SQL function when available, while making the no-search fallback query page only the requested slice instead of scanning the full `users` table.
     - add stronger observability around payment/order failures.
 - Phase-1 implementation decision:
   - Start with Bot Dashboard manual financial flows only:
@@ -444,6 +468,18 @@ Key Decisions:
   - Reuse the dashboard modal style for both title CRUD and all-user broadcast confirmation. **ASSUMED**
 - Latest dashboard mobile-responsiveness decision:
   - Prioritize shared-shell and global CSS improvements first so both Bot and Website dashboard tabs inherit the same mobile behavior without per-page rewrites wherever possible. **ASSUMED**
+- Latest Users order-history drill-down decision:
+  - Clicking `Đơn đã mua` in the Bot `Users` table should open an in-page modal rather than navigating away, so admins can inspect purchase history without losing search/pagination context.
+  - Reuse the admin analytics route pattern with server-side admin auth and lightweight per-user cache instead of querying `orders` directly from the browser. **ASSUMED**
+- Latest bot intro/support text + Users filter decision:
+  - Store the new bot text blocks in the existing Bot Dashboard `settings` table rather than hard-coding them, so operators can edit them without code deploys. **ASSUMED**
+  - Keep the new `Users` filter/sort behavior on the existing admin analytics snapshot path; extend the server/client API shape instead of reintroducing raw browser-side Supabase scans. **ASSUMED**
+  - No new SQL migration is required for this refinement because:
+    - bot text blocks persist in the existing `settings` table,
+    - `Users` custom filter/sort modes can fall back to server-side analytics code when the current paginated RPC does not cover those extra sort/filter dimensions. **ASSUMED**
+- Latest Bot `Users` order-history modal hotfix decision:
+  - Fix this in dashboard markup/CSS only; keep the modal interaction model and analytics payload unchanged.
+  - Use a scrollable modal body with fixed action row instead of letting the whole modal grow taller than the viewport. **ASSUMED**
 
 Progress State:
 - Done:
@@ -1391,6 +1427,30 @@ Progress State:
       - replaced browser `confirm()` with a dashboard confirm modal for `Gửi tất cả`, including outgoing-message preview.
     - `admin-dashboard/app/globals.css`:
       - added compact toolbar and confirm-preview styling for the modal-based flow.
+  - Completed latest bot intro/support text + Users filter refinement:
+    - `admin-dashboard/app/(admin)/settings/page.tsx`:
+      - added `shop_intro_text` textarea so Bot menu text above the product buttons is operator-configurable.
+      - added `support_panel_text` textarea so Bot support-panel body text is operator-configurable.
+    - `helpers/ui.py`:
+      - added `get_shop_menu_text(...)` and `get_support_panel_text(...)` with locale-safe fallbacks.
+    - `handlers/start.py` + `handlers/shop.py`:
+      - product-list/menu renders now use configurable shop text instead of hard-coded prompt when the setting is present.
+      - support flow now shows configurable support text and still attaches inline contact buttons when support links exist.
+      - support screen no longer hard-fails solely because support links are empty if custom support text is configured.
+    - `admin-dashboard/app/api/_shared/adminAnalytics.ts`:
+      - extended Bot `Users` snapshot flow with server-side custom filter/sort support (`with_revenue`, `without_revenue`, `with_orders`, username/revenue/order-count sort modes).
+      - default fast path still uses the existing paginated RPC; custom modes fall back to server-side hydrated sorting/filtering.
+    - `admin-dashboard/app/api/admin-analytics/users/route.ts` + `admin-dashboard/lib/adminAnalyticsClient.ts`:
+      - added `filter` / `sort` query support and cache-key differentiation.
+    - `admin-dashboard/app/(admin)/users/page.tsx`:
+      - added UI controls for richer filter/sort modes and total matched-user summary.
+  - Completed latest Bot `Users` order-history modal usability hotfix:
+    - `admin-dashboard/app/(admin)/users/page.tsx`:
+      - wrapped the order-history modal content in a dedicated scroll region so long histories no longer push the close button off-screen.
+    - `admin-dashboard/app/globals.css`:
+      - added `modal-scrollable` / `modal-scroll-region`.
+      - allowed backdrop vertical scrolling when needed.
+      - bounded order-history content blocks and enabled their internal scroll.
   - Completed dashboard mobile-responsive pass:
     - `admin-dashboard/components/AppShell.tsx` + `admin-dashboard/components/WebsiteShell.tsx`:
       - added mobile menu toggle with collapsible sidebar body for both Bot and Website dashboards.
@@ -1506,11 +1566,40 @@ Progress State:
   - Bootstrap rerun hardening is completed:
     - combined bootstrap SQL now handles pre-existing policies more safely on rerun
   - Bot dashboard refinement batch is completed in code and validated locally.
+- Now:
+  - Bot Dashboard fetch-latency optimization for `Dashboard` and `Users` is implemented and locally validated.
+  - Internal admin analytics requests now skip the extra auth-user round-trip, Dashboard avoids redundant user-profile enrichment when snapshot SQL already provides display names, and Users no longer full-scan `users` on empty-search fallback.
+  - New SQL migration `supabase_schema_bot_admin_analytics_perf.sql` is available to unlock the faster paginated DB snapshot path in deployed Supabase.
+- Now:
+  - Added server-side observability + short TTL cache for admin analytics routes under active user follow-up:
+    - `admin-analytics/dashboard` now returns `Server-Timing` (`auth`, `analytics`, `total`) and `X-Admin-Analytics-Cache`.
+    - `admin-analytics/users` now returns the same timing/cache headers and uses short server memory caching per page/query key.
+  - Screenshot evidence indicates the remaining latency is on server response time, not browser render time.
+- Now:
+  - Bot `Users` order-history drill-down is implemented and locally validated.
+  - Clicking a user's `Đơn đã mua` count now opens an in-page modal that loads all completed `orders` rows for that `user_id`, including product name, quantity, price, time, and stored delivery content.
+- Now:
+  - New follow-up is to add dashboard-configurable bot intro/support text and richer `Users` filters/sorts.
+  - Next step is to inspect the current Bot Settings fields, bot menu/support render path, and the admin analytics-backed `Users` table controls before patching.
+- Now:
+  - Bot intro/support text settings and Bot `Users` richer filter/sort controls are implemented and locally validated.
+  - Next step outside code is operator QA:
+    - set `shop_intro_text` / `support_panel_text` in Bot Dashboard Settings,
+    - verify the Telegram bot renders the exact preferred multiline copy,
+    - confirm the new `Users` sort/filter options match the admin review workflow you want most.
+- Now:
+  - Bot `Users` order-history modal hotfix is implemented and locally validated.
+  - Next step outside code is to re-open a user with many orders and verify:
+    - the modal body scrolls,
+    - the `Đóng` button stays reachable,
+    - background interaction remains blocked until modal close as intended.
 - Next:
   - Apply `supabase_schema_direct_order_fulfillment.sql` and `supabase_schema_bot_balance_purchase_fulfillment.sql` in Supabase for deployed atomic paths.
   - Apply `supabase_schema_bot_admin_analytics.sql` in Supabase so Dashboard / Reports / Users use DB-side snapshot functions in production.
+  - Apply `supabase_schema_bot_admin_analytics_perf.sql` in Supabase so Bot `Users` uses DB-side paginated snapshots and Bot `Dashboard` returns display names without extra enrichment queries.
   - Apply `supabase_schema_bot_user_profile_names.sql` in Supabase so Telegram display names can persist into `users.first_name/last_name`.
-  - Optional next pass after this is reducing remaining enrichment duplication in Bot `Orders` page.
+  - Optional next pass after this is reducing the Dashboard DB aggregation cost itself (counts/sum over large tables) if first uncached load is still too slow.
+  - Optional follow-up for the new modal: add pagination or export/copy actions if a user can have very large order history.
 
 Validation:
 - `npm -C admin-dashboard run build` passed after pricing/promo changes.
@@ -1619,6 +1708,9 @@ Validation:
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile sepay_checker.py` passed after payment-success relay notification integration.
 - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Products add-form `Mô tả` switched to `textarea` (multi-line support).
 - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after moving add-form `Mô tả` to full-width row so other inputs keep original size.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Bot Dashboard fetch-latency optimization (`adminAuth` fast path, Dashboard enrichment skip, Users paginated fallback, client request dedupe cache).
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after adding `Server-Timing` + short server-cache headers to Bot `Dashboard` / `Users` analytics routes.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after adding Bot `Users` order-history drill-down modal + per-user admin analytics route.
 - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after relay message Vietnamese + product-name updates in manual fulfill APIs.
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile sepay_checker.py` passed after relay message Vietnamese + product-name updates for auto-fulfill notifications.
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile sepay_checker.py` passed after SePay polling optimization (limit + last-seen checkpoint).
@@ -1666,6 +1758,9 @@ Validation:
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile database/db.py database/supabase_db.py` passed after aligning `add_product(...)` ordered-insert semantics in both DB layers.
 - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after moving Users broadcast title CRUD + send confirmation into dashboard modals.
 - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after global dashboard mobile-responsive shell/CSS pass.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after bot intro/support settings wiring + Users filter/sort extension.
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/start.py handlers/shop.py helpers/ui.py` passed after bot intro/support text helper + handler updates.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after the Bot `Users` order-history modal scrollability hotfix.
 
 Open Questions:
 - No blocking questions for the current analysis request.

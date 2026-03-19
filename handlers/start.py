@@ -11,7 +11,13 @@ from database import (
     set_user_language,
 )
 from keyboards import products_keyboard
-from helpers.ui import get_shop_page_size, get_user_keyboard, is_feature_enabled
+from helpers.ui import (
+    get_shop_menu_text,
+    get_shop_page_size,
+    get_support_panel_text,
+    get_user_keyboard,
+    is_feature_enabled,
+)
 from helpers.menu import delete_last_menu_message, set_last_menu_message, clear_last_menu_message
 from locales import get_text
 
@@ -158,7 +164,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # User đã chọn ngôn ngữ rồi, hiện giao diện bình thường
     welcome_text = get_text(lang, "welcome").format(name=user.first_name)
-    select_text = get_text(lang, "select_product")
+    select_text = await get_shop_menu_text(lang)
     
     await update.message.reply_text(welcome_text, reply_markup=await get_user_keyboard(lang))
     if not await is_feature_enabled("show_shop"):
@@ -202,7 +208,7 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Lấy text theo ngôn ngữ đã chọn
     lang_text = get_text(lang, "language_set")
     welcome_text = get_text(lang, "welcome").format(name=user.first_name)
-    select_text = get_text(lang, "select_product")
+    select_text = await get_shop_menu_text(lang)
     
     await query.edit_message_text(f"{lang_text}\n\n{welcome_text}")
     
@@ -306,7 +312,9 @@ async def handle_support_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     contact = _normalize_admin_contact(await get_setting("admin_contact", ""))
     contacts = _parse_support_contacts(await get_setting("support_contacts", ""), contact)
 
-    if not contacts:
+    support_text = await get_support_panel_text(lang)
+
+    if not contacts and not str(await get_setting("support_panel_text", "") or "").strip():
         text = (
             "❌ Chưa cài đặt liên hệ hỗ trợ. Vui lòng báo admin cập nhật mục Support contacts trong Dashboard."
             if lang != "en"
@@ -315,17 +323,15 @@ async def handle_support_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text(text, reply_markup=await get_user_keyboard(lang))
         return
 
-    text = (
-        "💬 HỖ TRỢ\n\nNhấn nút bên dưới để liên hệ hỗ trợ:"
-        if lang != "en"
-        else "💬 SUPPORT\n\nTap a button below to contact support:"
-    )
-    buttons = [InlineKeyboardButton(label, url=url) for label, url in contacts]
-    keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-    await update.message.reply_text(
-        text,
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+    if contacts:
+        buttons = [InlineKeyboardButton(label, url=url) for label, url in contacts]
+        keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+        await update.message.reply_text(
+            support_text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+    else:
+        await update.message.reply_text(support_text, reply_markup=await get_user_keyboard(lang))
 
     # Telegram may keep showing old reply-keyboard buttons until a new keyboard is sent.
     # If user pressed the legacy icon, push the refreshed keyboard once.
@@ -346,7 +352,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     products = await get_products()
     page_size = await get_shop_page_size()
     await query.edit_message_text(
-        get_text(lang, "select_product"),
+        await get_shop_menu_text(lang),
         reply_markup=products_keyboard(products, lang, page=0, page_size=page_size)
     )
     set_last_menu_message(context, query.message)

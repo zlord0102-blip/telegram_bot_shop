@@ -14,7 +14,7 @@ from keyboards import (
     products_keyboard, confirm_buy_keyboard,
     main_menu_keyboard, delete_keyboard
 )
-from helpers.ui import get_shop_page_size, get_user_keyboard, is_feature_enabled
+from helpers.ui import get_shop_menu_text, get_shop_page_size, get_user_keyboard, is_feature_enabled
 from helpers.menu import delete_last_menu_message, set_last_menu_message, clear_last_menu_message
 from helpers.sepay_state import mark_vietqr_message, mark_bot_message
 from helpers.formatting import format_stock_items
@@ -260,7 +260,7 @@ async def handle_shop_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await delete_last_menu_message(context, update.effective_chat.id)
     products = await get_products()
     page_size = await get_shop_page_size()
-    text = get_text(lang, "select_product")
+    text = await get_shop_menu_text(lang)
     menu_msg = await update.message.reply_text(
         text,
         reply_markup=products_keyboard(products, lang, page=0, page_size=page_size),
@@ -724,7 +724,7 @@ async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     products = await get_products()
     page_size = await get_shop_page_size()
     lang = await get_user_language(query.from_user.id)
-    text = "👉 CHỌN SẢN PHẨM BÊN DƯỚI:"
+    text = await get_shop_menu_text(lang)
     await query.edit_message_text(
         text,
         reply_markup=products_keyboard(products, lang, page=page, page_size=page_size),
