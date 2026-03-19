@@ -1,7 +1,7 @@
 import aiosqlite
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 def _parse_bool(value, default=True):
     if value is None:
@@ -27,6 +27,12 @@ def _parse_json_list(value):
 
 DB_PATH = "data/shop.db"
 
+
+class DirectOrderFulfillmentError(RuntimeError):
+    def __init__(self, code: str, message: str | None = None):
+        super().__init__(message or code)
+        self.code = code
+
 async def init_db():
     # Ensure data directory exists
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -35,6 +41,8 @@ async def init_db():
             CREATE TABLE IF NOT EXISTS users (
                 user_id INTEGER PRIMARY KEY,
                 username TEXT,
+                first_name TEXT,
+                last_name TEXT,
                 balance INTEGER DEFAULT 0,
                 balance_usdt REAL DEFAULT 0,
                 language TEXT DEFAULT 'vi',
@@ -49,6 +57,14 @@ async def init_db():
         # Add language column if not exists (migration)
         try:
             await db.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'vi'")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN first_name TEXT")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE users ADD COLUMN last_name TEXT")
         except:
             pass
         await db.execute("""
@@ -258,18 +274,55 @@ async def log_telegram_message(
         return
 
 # User functions
-async def get_or_create_user(user_id: int, username: str = None):
+async def get_or_create_user(
+    user_id: int,
+    username: str = None,
+    first_name: str = None,
+    last_name: str = None
+):
     async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT user_id, username, balance, balance_usdt, language FROM users WHERE user_id = ?", (user_id,))
+        cursor = await db.execute(
+            "SELECT user_id, username, first_name, last_name, balance, balance_usdt, language FROM users WHERE user_id = ?",
+            (user_id,)
+        )
         user = await cursor.fetchone()
         if not user:
             await db.execute(
-                "INSERT INTO users (user_id, username, language, created_at) VALUES (?, ?, NULL, ?)",
-                (user_id, username, datetime.now().isoformat())
+                "INSERT INTO users (user_id, username, first_name, last_name, language, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
+                (user_id, username, first_name, last_name, datetime.now().isoformat())
             )
             await db.commit()
-            return {"user_id": user_id, "username": username, "balance": 0, "balance_usdt": 0, "language": None}
-        return {"user_id": user[0], "username": user[1], "balance": user[2], "balance_usdt": user[3] or 0, "language": user[4]}
+            return {
+                "user_id": user_id,
+                "username": username,
+                "first_name": first_name,
+                "last_name": last_name,
+                "balance": 0,
+                "balance_usdt": 0,
+                "language": None
+            }
+
+        await db.execute(
+            """
+            UPDATE users
+            SET
+                username = COALESCE(?, username),
+                first_name = COALESCE(?, first_name),
+                last_name = COALESCE(?, last_name)
+            WHERE user_id = ?
+            """,
+            (username, first_name, last_name, user_id)
+        )
+        await db.commit()
+        return {
+            "user_id": user[0],
+            "username": username or user[1],
+            "first_name": first_name or user[2],
+            "last_name": last_name or user[3],
+            "balance": user[4],
+            "balance_usdt": user[5] or 0,
+            "language": user[6]
+        }
 
 async def get_user_language(user_id: int) -> str:
     async with aiosqlite.connect(DB_PATH) as db:
@@ -550,6 +603,89 @@ async def create_order(user_id: int, product_id: int, content: str, price: int):
         )
         await db.commit()
 
+
+async def fulfill_bot_balance_purchase(
+    user_id: int,
+    product_id: int,
+    quantity: int,
+    bonus_quantity: int,
+    order_price_per_item: int,
+    order_total_price: int,
+    charge_balance: int = 0,
+    charge_balance_usdt: float = 0.0,
+    order_group: str | None = None,
+):
+    required_stock = max(1, int(quantity) + max(0, int(bonus_quantity or 0)))
+    stocks = await get_available_stock_batch(product_id, required_stock)
+    if not stocks or len(stocks) < required_stock:
+        raise DirectOrderFulfillmentError("not_enough_stock")
+
+    current_balance = None
+    if charge_balance:
+        current_balance = await get_balance(user_id)
+        if current_balance < int(charge_balance):
+            raise DirectOrderFulfillmentError("insufficient_balance")
+
+    current_balance_usdt = None
+    if charge_balance_usdt:
+        current_balance_usdt = await get_balance_usdt(user_id)
+        if current_balance_usdt + 1e-9 < float(charge_balance_usdt):
+            raise DirectOrderFulfillmentError("insufficient_usdt_balance")
+
+    stock_ids = [stock[0] for stock in stocks]
+    items = [stock[1] for stock in stocks]
+    await mark_stock_sold_batch(stock_ids)
+
+    final_order_group = (order_group or "").strip() or f"ORD{user_id}{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    await create_order_bulk(
+        user_id,
+        product_id,
+        items,
+        int(order_price_per_item),
+        final_order_group,
+        total_price=int(order_total_price),
+        quantity=len(items),
+    )
+
+    new_balance = None
+    if charge_balance:
+        await update_balance(user_id, -int(charge_balance))
+        new_balance = await get_balance(user_id)
+    elif current_balance is not None:
+        new_balance = current_balance
+
+    new_balance_usdt = None
+    if charge_balance_usdt:
+        await update_balance_usdt(user_id, -float(charge_balance_usdt))
+        new_balance_usdt = await get_balance_usdt(user_id)
+    elif current_balance_usdt is not None:
+        new_balance_usdt = current_balance_usdt
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT name, description, format_data FROM products WHERE id = ?",
+            (product_id,),
+        )
+        product_row = await cursor.fetchone()
+
+    return {
+        "user_id": user_id,
+        "product_id": product_id,
+        "product_name": (product_row[0] if product_row else f"#{product_id}") or f"#{product_id}",
+        "description": (product_row[1] if product_row else "") or "",
+        "format_data": (product_row[2] if product_row else "") or "",
+        "quantity": int(quantity),
+        "bonus_quantity": int(bonus_quantity or 0),
+        "delivered_quantity": len(items),
+        "order_group": final_order_group,
+        "items": items,
+        "new_balance": new_balance,
+        "new_balance_usdt": new_balance_usdt,
+        "order_total_price": int(order_total_price),
+        "charged_balance": int(charge_balance or 0),
+        "charged_balance_usdt": float(charge_balance_usdt or 0.0),
+    }
+
 async def get_user_orders(user_id: int):
     """Lấy lịch sử đơn hàng - gom theo order_group hoặc từng đơn"""
     async with aiosqlite.connect(DB_PATH) as db:
@@ -565,7 +701,7 @@ async def get_order_detail(order_id: int):
     """Lấy chi tiết 1 đơn hàng"""
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
-            """SELECT o.id, p.name, o.content, o.price, o.created_at, o.quantity
+            """SELECT o.id, p.name, o.content, o.price, o.created_at, o.quantity, p.description, p.format_data
                FROM orders o JOIN products p ON o.product_id = p.id 
                WHERE o.id = ?""",
             (order_id,)
@@ -662,6 +798,98 @@ async def set_direct_order_status(order_id: int, status: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE direct_orders SET status = ? WHERE id = ?", (status, order_id))
         await db.commit()
+
+
+async def fulfill_bot_direct_order(
+    order_id: int,
+    order_group: str | None = None,
+    expire_minutes: int = 10,
+):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT id, user_id, product_id, quantity, bonus_quantity, unit_price, amount, code, status, created_at
+               FROM direct_orders WHERE id = ?""",
+            (order_id,),
+        )
+        row = await cursor.fetchone()
+        if not row:
+            raise DirectOrderFulfillmentError("direct_order_not_found")
+        if str(row[8] or "") != "pending":
+            raise DirectOrderFulfillmentError("direct_order_not_pending")
+
+        created_at = row[9]
+        try:
+            created_dt = datetime.fromisoformat(str(created_at).replace("Z", "+00:00"))
+        except Exception:
+            created_dt = None
+        if created_dt and (datetime.now(created_dt.tzinfo) if created_dt.tzinfo else datetime.now()) - created_dt >= timedelta(minutes=max(1, int(expire_minutes or 10))):
+            await db.execute("UPDATE direct_orders SET status = 'cancelled' WHERE id = ?", (order_id,))
+            await db.commit()
+            raise DirectOrderFulfillmentError("direct_order_expired")
+
+        product_id = int(row[2] or 0)
+        quantity = int(row[3] or 1)
+        bonus_quantity = int(row[4] or 0)
+        deliver_quantity = max(1, quantity + max(0, bonus_quantity))
+
+        cursor = await db.execute(
+            "SELECT id, content FROM stock WHERE product_id = ? AND sold = 0 ORDER BY id LIMIT ?",
+            (product_id, deliver_quantity),
+        )
+        stocks = await cursor.fetchall()
+        if not stocks or len(stocks) < deliver_quantity:
+            await db.execute("UPDATE direct_orders SET status = 'failed' WHERE id = ?", (order_id,))
+            await db.commit()
+            raise DirectOrderFulfillmentError("not_enough_stock")
+
+        stock_ids = [stock[0] for stock in stocks]
+        items = [stock[1] for stock in stocks]
+        placeholders = ",".join("?" * len(stock_ids))
+        await db.execute(f"UPDATE stock SET sold = 1 WHERE id IN ({placeholders})", stock_ids)
+
+        final_order_group = (order_group or "").strip() or f"PAY{row[1]}{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        total_price = int(row[6] or 0) or (int(row[5] or 0) * max(1, quantity))
+        await db.execute(
+            "INSERT INTO orders (user_id, product_id, content, price, quantity, order_group, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (row[1], product_id, json.dumps(items), total_price, len(items), final_order_group, datetime.now().isoformat()),
+        )
+        await db.execute("UPDATE direct_orders SET status = 'confirmed' WHERE id = ?", (order_id,))
+        await db.commit()
+
+        cursor = await db.execute(
+            "SELECT name, description, format_data FROM products WHERE id = ?",
+            (product_id,),
+        )
+        product_row = await cursor.fetchone()
+
+        return {
+            "direct_order_id": int(row[0]),
+            "order_id": None,
+            "user_id": int(row[1]),
+            "product_id": product_id,
+            "product_name": (product_row[0] if product_row else f"#{product_id}") or f"#{product_id}",
+            "description": (product_row[1] if product_row else "") or "",
+            "format_data": (product_row[2] if product_row else "") or "",
+            "quantity": quantity,
+            "bonus_quantity": bonus_quantity,
+            "delivered_quantity": len(items),
+            "unit_price": int(row[5] or 0),
+            "amount": total_price,
+            "code": str(row[7] or ""),
+            "order_group": final_order_group,
+            "items": items,
+        }
+
+
+async def fulfill_website_direct_order(
+    website_direct_order_id: int,
+    order_group: str | None = None,
+    expire_minutes: int = 10,
+):
+    raise DirectOrderFulfillmentError(
+        "website_direct_order_not_supported",
+        "website_direct_order_not_supported_in_sqlite",
+    )
 
 async def get_pending_deposits():
     async with aiosqlite.connect(DB_PATH) as db:

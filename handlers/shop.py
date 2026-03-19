@@ -4,12 +4,11 @@ import io
 from telegram import Update, InputFile, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import (
-    get_products, get_product, get_balance, update_balance,
-    get_available_stock, mark_stock_sold, create_order, create_order_bulk,
+    get_products, get_product, get_balance,
     get_user_orders, create_deposit_with_settings, get_or_create_user,
     create_direct_order_with_settings,
-    get_available_stock_batch, mark_stock_sold_batch,
-    get_user_language, get_balance_usdt, update_balance_usdt
+    get_user_language, get_balance_usdt,
+    fulfill_bot_balance_purchase, DirectOrderFulfillmentError
 )
 from keyboards import (
     products_keyboard, confirm_buy_keyboard,
@@ -19,6 +18,10 @@ from helpers.ui import get_shop_page_size, get_user_keyboard, is_feature_enabled
 from helpers.menu import delete_last_menu_message, set_last_menu_message, clear_last_menu_message
 from helpers.sepay_state import mark_vietqr_message, mark_bot_message
 from helpers.formatting import format_stock_items
+from helpers.purchase_messages import (
+    build_delivery_message,
+    build_purchase_summary_text,
+)
 from helpers.pricing import (
     get_max_affordable_quantity,
     get_max_quantity_by_stock,
@@ -37,15 +40,6 @@ def make_file(items: list, header: str = "") -> io.BytesIO:
     buf = io.BytesIO(content.encode('utf-8'))
     buf.seek(0)
     return buf
-
-def format_description_block(description: str | None, label: str = "📝 Mô tả") -> str:
-    if not description:
-        return ""
-    cleaned = str(description).strip()
-    if not cleaned:
-        return ""
-    return f"{label}:\n{cleaned}\n\n"
-
 
 def format_pricing_rules(product: dict) -> str:
     lines: list[str] = []
@@ -78,6 +72,56 @@ def format_product_overview(product: dict, include_usdt_price: bool = False) -> 
     if pricing_rules:
         lines.append(pricing_rules)
     return "\n".join(lines)
+
+
+async def send_purchase_delivery_result(
+    *,
+    context: ContextTypes.DEFAULT_TYPE,
+    purchased_items: list[str],
+    format_data,
+    header_lines: list[str],
+    filename_base: str,
+    success_text: str,
+    description: str = "",
+    lang: str = "vi",
+    reply_markup,
+    message=None,
+    query=None,
+):
+    file_buf = make_file(format_stock_items(purchased_items, format_data, html=False), "\n".join(header_lines))
+    filename = f"{filename_base}_{len(purchased_items)}.txt"
+
+    if len(purchased_items) > 5:
+        if message is not None:
+            await message.reply_document(
+                document=file_buf,
+                filename=filename,
+                caption=success_text,
+                reply_markup=reply_markup,
+            )
+        elif query is not None:
+            await context.bot.send_document(
+                chat_id=query.message.chat_id,
+                document=file_buf,
+                filename=filename,
+                caption=success_text,
+                reply_markup=reply_markup,
+            )
+        return
+
+    text = build_delivery_message(
+        summary_text=success_text,
+        purchased_items=purchased_items,
+        format_data=format_data,
+        description=description,
+        lang=lang,
+        html=True,
+    )
+
+    if message is not None:
+        await message.reply_text(text, parse_mode="HTML", reply_markup=reply_markup)
+    elif query is not None:
+        await query.edit_message_text(text, parse_mode="HTML", reply_markup=reply_markup)
 
 # Bank codes cho VietQR
 BANK_CODES = {
@@ -226,14 +270,58 @@ async def handle_shop_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_buy_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý khi user nhập số lượng muốn mua"""
     product_id = context.user_data.get('buying_product_id')
-    max_can_buy = context.user_data.get('buying_max', 0)
-    currency = context.user_data.get('buying_currency', 'vnd')
+    max_can_buy = context.user_data.get('buying_max')
+    currency = context.user_data.get('buying_currency')
     
     if not product_id:
         return  # Không trong trạng thái mua hàng
     
     user_id = update.effective_user.id
     lang = await get_user_language(user_id)
+
+    if max_can_buy is None or not currency:
+        product = await get_product(product_id)
+        if not product:
+            await update.message.reply_text(get_text(lang, "product_not_found"))
+            context.user_data.pop('buying_product_id', None)
+            return
+
+        user_balance = await get_balance(user_id)
+        user_balance_usdt = await get_balance_usdt(user_id)
+        payment_mode = await get_payment_mode()
+        max_by_stock = get_max_quantity_by_stock(product, product["stock"])
+        if payment_mode == "balance":
+            max_vnd = get_max_affordable_quantity(product, user_balance, product["stock"], currency="vnd") if product["price"] > 0 else 0
+        else:
+            max_vnd = max_by_stock if product['price'] > 0 else 0
+        max_usdt = (
+            get_max_affordable_quantity(product, user_balance_usdt, product["stock"], currency="usdt")
+            if product['price_usdt'] > 0
+            else 0
+        )
+
+        keyboard = []
+        preview_vnd_price = int(get_pricing_snapshot(product, 1, "vnd")["unit_price"])
+        if product['price'] > 0 and (payment_mode != "balance" or max_vnd > 0):
+            vnd_label = "💰 VNĐ"
+            show_price = True
+            if payment_mode == "direct":
+                vnd_label = "💳 VietQR"
+                show_price = False
+            elif payment_mode == "hybrid":
+                vnd_label = "💳 VNĐ/VietQR"
+            label = f"{vnd_label} (từ {preview_vnd_price:,}đ)" if show_price else vnd_label
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"pay_vnd_{product_id}")])
+        if product['price_usdt'] > 0 and max_usdt > 0:
+            keyboard.append([InlineKeyboardButton(f"💵 USDT ({product['price_usdt']} USDT)", callback_data=f"pay_usdt_{product_id}")])
+        keyboard.append([InlineKeyboardButton("🗑 Xóa", callback_data="delete_msg")])
+
+        remind_text = "⚠️ Bạn chưa chọn phương thức thanh toán.\nVui lòng chọn bên dưới trước khi nhập số lượng."
+        if lang == 'en':
+            remind_text = "⚠️ Please choose a payment method first, then enter quantity."
+        menu_msg = await update.message.reply_text(remind_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        set_last_menu_message(context, menu_msg)
+        return
     
     try:
         quantity = int(update.message.text.strip())
@@ -244,6 +332,8 @@ async def handle_buy_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE
     if quantity < 1:
         await update.message.reply_text(get_text(lang, "invalid_quantity"))
         return
+
+    max_can_buy = int(max_can_buy)
     
     if quantity > max_can_buy:
         await update.message.reply_text(
@@ -322,23 +412,6 @@ async def handle_buy_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE
             context.user_data.pop('buying_currency', None)
             return
     
-    # Lấy stock batch
-    stocks = await get_available_stock_batch(product_id, required_stock)
-    
-    if not stocks or len(stocks) < required_stock:
-        await update.message.reply_text(get_text(lang, "out_of_stock").format(name=product['name']))
-        context.user_data.pop('buying_product_id', None)
-        return
-    
-    # Mark sold batch
-    stock_ids = [s[0] for s in stocks]
-    purchased_items = [s[1] for s in stocks]
-    await mark_stock_sold_batch(stock_ids)
-    
-    # Tạo đơn hàng
-    from datetime import datetime
-    order_group = f"ORD{user_id}{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    
     # Lưu giá theo VNĐ để thống kê
     if currency == 'usdt':
         price_for_order = int(float(unit_price) * USDT_RATE)
@@ -347,35 +420,48 @@ async def handle_buy_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE
         price_for_order = int(unit_price)
         total_for_order = int(total_price)
 
-    await create_order_bulk(
-        user_id,
-        product_id,
-        purchased_items,
-        price_for_order,
-        order_group,
-        total_price=total_for_order,
-        quantity=len(purchased_items),
-    )
-    
-    # Trừ tiền
     actual_total = total_price
+    try:
+        purchase = await fulfill_bot_balance_purchase(
+            user_id=user_id,
+            product_id=product_id,
+            quantity=quantity,
+            bonus_quantity=bonus_quantity,
+            order_price_per_item=price_for_order,
+            order_total_price=total_for_order,
+            charge_balance=0 if currency == 'usdt' else int(actual_total),
+            charge_balance_usdt=float(actual_total) if currency == 'usdt' else 0.0,
+        )
+    except DirectOrderFulfillmentError as exc:
+        if exc.code in ("not_enough_stock", "product_not_found"):
+            await update.message.reply_text(get_text(lang, "out_of_stock").format(name=product['name']))
+        elif exc.code == "insufficient_usdt_balance":
+            await update.message.reply_text(
+                get_text(lang, "not_enough_balance").format(balance=f"{balance:.2f} USDT", need=f"{total_price:.2f} USDT")
+            )
+        else:
+            await update.message.reply_text(
+                get_text(lang, "not_enough_balance").format(balance=f"{balance:,}đ", need=f"{int(total_price):,}đ")
+            )
+        context.user_data.pop('buying_product_id', None)
+        context.user_data.pop('buying_max', None)
+        context.user_data.pop('buying_currency', None)
+        return
+
+    purchased_items = purchase["items"]
     if currency == 'usdt':
-        await update_balance_usdt(user_id, -actual_total)
-        new_balance = await get_balance_usdt(user_id)
+        new_balance = float(purchase.get("new_balance_usdt") or 0.0)
         balance_text = f"{new_balance:.2f} USDT"
-        total_text = f"{actual_total:.2f} USDT"
+        total_text = f"{float(actual_total):.2f} USDT"
     else:
-        await update_balance(user_id, -int(actual_total))
-        new_balance = await get_balance(user_id)
+        new_balance = int(purchase.get("new_balance") or 0)
         balance_text = f"{new_balance:,}đ"
         total_text = f"{int(actual_total):,}đ"
-    
-    format_data = product.get("format_data") if product else None
-    formatted_items_plain = format_stock_items(purchased_items, format_data, html=False)
-    # Tạo file
-    description = (product.get("description") or "").strip()
+
+    format_data = purchase.get("format_data")
+    description = str(purchase.get("description") or "").strip()
     header_lines = [
-        f"Product: {product['name']}",
+        f"Product: {purchase['product_name']}",
         f"Qty: {len(purchased_items)}",
         f"Paid Qty: {quantity}",
         f"Total: {total_text}",
@@ -384,28 +470,27 @@ async def handle_buy_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE
         header_lines.append(f"Bonus: {bonus_quantity}")
     if description:
         header_lines.append(f"Description: {description}")
-    header = "\n".join(header_lines)
-    file_buf = make_file(formatted_items_plain, header)
-    filename = f"{product['name']}_{len(purchased_items)}.txt"
-    
-    success_text = get_text(lang, "buy_success").format(
-        name=product['name'], qty=len(purchased_items), total=total_text, balance=balance_text
+    success_text = build_purchase_summary_text(
+        product_name=purchase['product_name'],
+        delivered_quantity=len(purchased_items),
+        total_text=total_text,
+        bonus_quantity=bonus_quantity,
+        balance_text=balance_text,
+        lang=lang,
     )
-    if bonus_quantity:
-        success_text += f"\n🎁 Tặng thêm: {bonus_quantity}"
-    
-    description_block = format_description_block(description)
-    if len(purchased_items) > 5:
-        await update.message.reply_document(
-            document=file_buf,
-            filename=filename,
-            caption=success_text,
-            reply_markup=await get_user_keyboard(lang)
-        )
-    else:
-        items_formatted = "\n\n".join(format_stock_items(purchased_items, format_data, html=True))
-        text = f"{success_text}\n\n{description_block}🔐 Account:\n{items_formatted}"
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=await get_user_keyboard(lang))
+
+    await send_purchase_delivery_result(
+        context=context,
+        purchased_items=purchased_items,
+        format_data=format_data,
+        header_lines=header_lines,
+        filename_base=purchase["product_name"],
+        success_text=success_text,
+        description=description,
+        lang=lang,
+        reply_markup=await get_user_keyboard(lang),
+        message=update.message,
+    )
     
     # Clear trạng thái mua
     context.user_data.pop('buying_product_id', None)
@@ -687,6 +772,8 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         max_buy = get_max_affordable_quantity(product, user_balance_usdt, product["stock"], currency="usdt")
         context.user_data['buying_product_id'] = product_id
+        context.user_data.pop('buying_max', None)
+        context.user_data.pop('buying_currency', None)
         context.user_data['buying_max'] = max_buy
         context.user_data['buying_currency'] = 'usdt'
         
@@ -718,6 +805,8 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         
         context.user_data['buying_product_id'] = product_id
+        context.user_data.pop('buying_max', None)
+        context.user_data.pop('buying_currency', None)
         text = format_product_overview(product)
         if payment_mode == "balance":
             text += f"\n\n💳 Số dư VNĐ: {user_balance:,}đ (mua tối đa {max_vnd})"
@@ -882,42 +971,33 @@ async def confirm_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Lấy stock batch (1 query thay vì N queries)
-    stocks = await get_available_stock_batch(product_id, required_stock)
-    
-    if not stocks or len(stocks) < required_stock:
-        await query.edit_message_text("❌ Sản phẩm đã hết hàng!", reply_markup=delete_keyboard())
-        return
-    
-    # Mark sold batch (1 query thay vì N queries)
-    stock_ids = [s[0] for s in stocks]
-    purchased_items = [s[1] for s in stocks]
-    await mark_stock_sold_batch(stock_ids)
-    
-    # Tạo 1 đơn hàng duy nhất cho tất cả items
-    from datetime import datetime
-    order_group = f"ORD{user_id}{datetime.now().strftime('%Y%m%d%H%M%S')}"
-    await create_order_bulk(
-        user_id,
-        product_id,
-        purchased_items,
-        unit_price,
-        order_group,
-        total_price=total_price,
-        quantity=len(purchased_items),
-    )
-    
-    # Trừ tiền theo số lượng thực tế mua được
     actual_total = total_price
-    await update_balance(user_id, -actual_total)
-    new_balance = await get_balance(user_id)
-    
-    format_data = product.get("format_data") if product else None
-    formatted_items_plain = format_stock_items(purchased_items, format_data, html=False)
-    # Tạo file trước
-    description = (product.get("description") or "").strip()
+    try:
+        purchase = await fulfill_bot_balance_purchase(
+            user_id=user_id,
+            product_id=product_id,
+            quantity=quantity,
+            bonus_quantity=bonus_quantity,
+            order_price_per_item=unit_price,
+            order_total_price=total_price,
+            charge_balance=actual_total,
+        )
+    except DirectOrderFulfillmentError as exc:
+        if exc.code in ("not_enough_stock", "product_not_found"):
+            await query.edit_message_text("❌ Sản phẩm đã hết hàng!", reply_markup=delete_keyboard())
+        else:
+            await query.edit_message_text(
+                f"❌ Số dư không đủ!\n\n💰 Số dư: {balance:,}đ\n💵 Cần: {total_price:,}đ ({quantity}x {product['price']:,}đ)\n\nVui lòng nạp thêm tiền.",
+                reply_markup=delete_keyboard()
+            )
+        return
+
+    purchased_items = purchase["items"]
+    new_balance = int(purchase.get("new_balance") or 0)
+    format_data = purchase.get("format_data")
+    description = str(purchase.get("description") or "").strip()
     header_lines = [
-        f"Sản phẩm: {product['name']}",
+        f"Sản phẩm: {purchase['product_name']}",
         f"Số lượng: {len(purchased_items)}",
         f"Số lượng mua: {quantity}",
         f"Tổng tiền: {actual_total:,}đ",
@@ -926,35 +1006,27 @@ async def confirm_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         header_lines.append(f"Tặng thêm: {bonus_quantity}")
     if description:
         header_lines.append(f"Mô tả: {description}")
-    header = "\n".join(header_lines)
-    file_buf = make_file(formatted_items_plain, header)
-    filename = f"{product['name']}_{len(purchased_items)}.txt"
-    
-    # Gửi file nếu nhiều items
-    description_block = format_description_block(description)
-    if len(purchased_items) > 5:
-        await context.bot.send_document(
-            chat_id=query.message.chat_id,
-            document=file_buf,
-            filename=filename,
-            caption=(
-                f"✅ Mua thành công {len(purchased_items)} {product['name']}\n"
-                f"💰 {actual_total:,}đ | 💳 Còn {new_balance:,}đ"
-                + (f"\n🎁 Tặng thêm: {bonus_quantity}" if bonus_quantity else "")
-            )
-        )
-    else:
-        # Gửi text bình thường
-        items_formatted = "\n\n".join(format_stock_items(purchased_items, format_data, html=True))
-        text = f"""✅ MUA HÀNG THÀNH CÔNG!
 
-📦 {product['name']} x{len(purchased_items)}
-💰 {actual_total:,}đ | 💳 Còn {new_balance:,}đ
-{"🎁 Tặng thêm: " + str(bonus_quantity) if bonus_quantity else ""}
-
-{description_block}🔐 Account:
-{items_formatted}"""
-        await query.edit_message_text(text, parse_mode="HTML", reply_markup=delete_keyboard())
+    success_text = build_purchase_summary_text(
+        product_name=purchase["product_name"],
+        delivered_quantity=len(purchased_items),
+        total_text=f"{actual_total:,}đ",
+        bonus_quantity=bonus_quantity,
+        balance_text=f"{new_balance:,}đ",
+        lang="vi",
+    )
+    await send_purchase_delivery_result(
+        context=context,
+        purchased_items=purchased_items,
+        format_data=format_data,
+        header_lines=header_lines,
+        filename_base=purchase["product_name"],
+        success_text=success_text,
+        description=description,
+        lang="vi",
+        reply_markup=delete_keyboard(),
+        query=query,
+    )
 
 async def show_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -963,7 +1035,12 @@ async def show_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=delete_keyboard())
         return
     
-    user = await get_or_create_user(query.from_user.id, query.from_user.username)
+    user = await get_or_create_user(
+        query.from_user.id,
+        query.from_user.username,
+        getattr(query.from_user, "first_name", None),
+        getattr(query.from_user, "last_name", None)
+    )
     
     text = f"""
 👤 THÔNG TIN TÀI KHOẢN
@@ -1021,6 +1098,7 @@ async def show_order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=delete_keyboard())
         return
+    lang = await get_user_language(query.from_user.id)
     
     order_id = int(query.data.split("_")[2])
     
@@ -1031,8 +1109,8 @@ async def show_order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("❌ Không tìm thấy đơn hàng!", show_alert=True)
         return
     
-    # order: (id, product_name, content, price, created_at, quantity)
-    _, product_name, content, price, created_at, quantity = order
+    # order: (id, product_name, content, price, created_at, quantity, description, format_data)
+    _, product_name, content, price, created_at, quantity, description, format_data = order
     quantity = quantity or 1
     
     # Parse content (có thể là JSON array hoặc string đơn)
@@ -1045,34 +1123,50 @@ async def show_order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         items = [content]
     
     # Nếu ít items -> hiển thị text
+    created_text = created_at[:19] if created_at else ""
+    summary_text = build_purchase_summary_text(
+        product_name=product_name,
+        delivered_quantity=len(items),
+        total_text=f"{price:,}đ",
+        lang=lang,
+        title=f"📋 CHI TIẾT ĐƠN HÀNG #{order_id}",
+        extra_lines=[f"📅 Ngày mua: {created_text}"] if created_text else None,
+    )
+
     if len(items) <= 10:
         await query.answer()
-        items_text = "\n\n".join([f"<code>{item}</code>" for item in items])
-        text = f"""
-📋 CHI TIẾT ĐƠN HÀNG #{order_id}
-
-📦 Sản phẩm: {product_name}
-🔢 Số lượng: {quantity}
-💰 Tổng tiền: {price:,}đ
-📅 Ngày mua: {created_at[:19] if created_at else ""}
-
-📝 Nội dung:
-{items_text}
-"""
+        text = build_delivery_message(
+            summary_text=summary_text,
+            purchased_items=items,
+            format_data=format_data,
+            description=description,
+            lang=lang,
+            html=True,
+        )
         await query.edit_message_text(text, parse_mode="HTML", reply_markup=delete_keyboard())
     else:
         # Nhiều items -> gửi file ngay
         await query.answer()
-        
-        header = f"Đơn hàng: #{order_id}\nSản phẩm: {product_name}\nSố lượng: {quantity}\nTổng tiền: {price:,}đ"
-        file_buf = make_file(items, header)
+
+        header_lines = [
+            f"Loại hàng: {product_name}",
+            f"Số lượng: {len(items)}",
+            f"Tổng: {price:,}đ",
+        ]
+        if quantity and quantity != len(items):
+            header_lines.append(f"SL thanh toán: {quantity}")
+        if created_text:
+            header_lines.append(f"Ngày mua: {created_text}")
+        if description:
+            header_lines.append(f"Mô tả: {description}")
+        file_buf = make_file(format_stock_items(items, format_data, html=False), "\n".join(header_lines))
         filename = f"Don_{order_id}.txt"
-        
+
         await context.bot.send_document(
             chat_id=query.message.chat_id,
             document=file_buf,
             filename=filename,
-            caption=f"📋 Đơn #{order_id} | {product_name} | SL: {quantity}"
+            caption=summary_text,
         )
 
 

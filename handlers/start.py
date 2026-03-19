@@ -136,7 +136,12 @@ def _parse_support_contacts(raw_value: str, admin_contact: str) -> list[tuple[st
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    db_user = await get_or_create_user(user.id, user.username)
+    db_user = await get_or_create_user(
+        user.id,
+        user.username,
+        getattr(user, "first_name", None),
+        getattr(user, "last_name", None)
+    )
     lang = db_user.get('language', 'vi')
     
     # Nếu user chưa có ngôn ngữ (mới), hiện menu chọn

@@ -65,7 +65,12 @@ async def log_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     try:
-        await get_or_create_user(user.id, getattr(user, "username", None))
+        await get_or_create_user(
+            user.id,
+            getattr(user, "username", None),
+            getattr(user, "first_name", None),
+            getattr(user, "last_name", None)
+        )
     except Exception:
         # User creation is best-effort; logging can still proceed.
         pass
@@ -81,4 +86,3 @@ async def log_incoming_message(update: Update, context: ContextTypes.DEFAULT_TYP
         payload=payload,
         sent_at=message.date,
     )
-

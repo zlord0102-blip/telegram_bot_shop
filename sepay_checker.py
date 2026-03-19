@@ -10,6 +10,11 @@ from datetime import datetime
 from config import SEPAY_API_TOKEN
 from helpers.sepay_state import has_latest_vietqr_message, mark_bot_message
 from helpers.formatting import format_stock_items
+from helpers.purchase_messages import (
+    build_delivery_message,
+    build_display_name,
+    build_purchase_summary_text,
+)
 
 USE_SUPABASE = os.getenv("USE_SUPABASE", "true").lower() in ("1", "true", "yes") and os.getenv("SUPABASE_URL")
 SEPAY_DEBUG = os.getenv("SEPAY_DEBUG", "").lower() in ("1", "true", "yes")
@@ -46,11 +51,9 @@ if USE_SUPABASE:
         set_deposit_status,
         get_pending_direct_orders,
         set_direct_order_status,
-        get_available_stock_batch,
-        mark_stock_sold_batch,
-        create_order_bulk,
-        create_website_order_bulk,
-        get_product,
+        fulfill_bot_direct_order,
+        fulfill_website_direct_order,
+        DirectOrderFulfillmentError,
         get_pending_website_direct_orders,
         set_website_direct_order_status,
     )
@@ -70,15 +73,6 @@ def make_file(items: list, header: str = "") -> io.BytesIO:
     buf = io.BytesIO(content.encode("utf-8"))
     buf.seek(0)
     return buf
-
-def format_description_block(description: str | None, label: str = "📝 Mô tả") -> str:
-    if not description:
-        return ""
-    cleaned = str(description).strip()
-    if not cleaned:
-        return ""
-    return f"{label}:\n{cleaned}\n\n"
-
 
 def _parse_chat_id(raw_value):
     if raw_value is None:
@@ -134,6 +128,57 @@ async def send_payment_relay_notification(relay_token: str, relay_chat_id: int |
         except Exception as e:
             logger.warning("Relay notify exception: %s", e)
             return False
+
+
+async def resolve_user_display_name(user_id: int) -> str:
+    try:
+        from database import get_or_create_user
+
+        user = await get_or_create_user(user_id, None, None, None)
+        if isinstance(user, dict):
+            return build_display_name(
+                user.get("first_name"),
+                user.get("last_name"),
+                user.get("username"),
+                fallback="-",
+            )
+    except Exception:
+        pass
+    return "-"
+
+
+def build_bot_payment_relay_text(
+    *,
+    direct_order_id: int,
+    user_id: int,
+    display_name: str,
+    code: str,
+    tx_id: int | str,
+    amount: int,
+    expected_amount: int,
+    product_name: str,
+    quantity: int,
+    delivered_quantity: int,
+    bonus_quantity: int,
+) -> str:
+    return "\n".join(
+        [
+            "✅ Thanh toán thành công (Bot)",
+            f"Mã đơn hệ thống: {direct_order_id}",
+            f"Mã người dùng: {user_id}",
+            f"Tên người dùng: {display_name}",
+            f"Mã thanh toán: {code}",
+            f"Mã giao dịch: {tx_id}",
+            "",
+            f"Số tiền nhận: {amount:,}đ",
+            f"Số tiền kỳ vọng: {expected_amount:,}đ",
+            "",
+            f"Sản phẩm: {product_name}",
+            f"SL thanh toán: {quantity}",
+            f"SL giao: {delivered_quantity}",
+            f"SL khuyến mãi: {bonus_quantity}",
+        ]
+    )
 
 
 def _resolve_product_name(product: dict | None, product_id: int) -> str:
@@ -462,162 +507,156 @@ async def process_transactions(bot_app=None):
                 code_norm = _normalize_content(code)
                 website_direct_order = _find_website_direct_order(code, _website_orders_by_code_upper, _website_orders_by_code_norm)
                 if (code_upper in content_upper or code_norm in content_norm) and amount >= expected_amount:
-                    # Fulfill direct order
-                    deliver_quantity = max(1, int(quantity) + max(0, int(bonus_quantity or 0)))
-                    stocks = await get_available_stock_batch(product_id, deliver_quantity)
-                    if not stocks or len(stocks) < deliver_quantity:
-                        await set_direct_order_status(order_id, "failed")
-                        if website_direct_order:
-                            try:
-                                await set_website_direct_order_status(website_direct_order[0], "failed")
-                            except Exception:
-                                pass
-                            _remove_website_direct_order_from_maps(website_direct_order)
-                        elif bot_app:
-                            await bot_app.bot.send_message(
-                                user_id,
-                                "❌ Thanh toán đã nhận nhưng sản phẩm hiện hết hàng. Vui lòng liên hệ admin."
-                            )
-                        await mark_processed_transaction(tx_id)
-                        matched = True
-                        break
-
-                    stock_ids = [s[0] for s in stocks]
-                    purchased_items = [s[1] for s in stocks]
-                    await mark_stock_sold_batch(stock_ids)
-
                     order_group = f"PAY{user_id}{datetime.now().strftime('%Y%m%d%H%M%S')}"
-                    product = None
                     try:
-                        product = await get_product(product_id)
-                    except Exception:
-                        product = None
-                    product_name = _resolve_product_name(product, product_id)
+                        if website_direct_order:
+                            fulfillment = await fulfill_website_direct_order(
+                                website_direct_order[0],
+                                order_group=order_group,
+                                expire_minutes=DIRECT_ORDER_PENDING_EXPIRE_MINUTES,
+                            )
+                        else:
+                            fulfillment = await fulfill_bot_direct_order(
+                                order_id,
+                                order_group=order_group,
+                                expire_minutes=DIRECT_ORDER_PENDING_EXPIRE_MINUTES,
+                            )
+                    except DirectOrderFulfillmentError as exc:
+                        if website_direct_order and exc.code in (
+                            "website_direct_order_not_pending",
+                            "website_direct_order_expired",
+                            "mirror_direct_order_not_pending",
+                            "mirror_direct_order_not_found",
+                            "not_enough_stock",
+                        ):
+                            _remove_website_direct_order_from_maps(website_direct_order)
+
+                        if exc.code == "not_enough_stock":
+                            if not website_direct_order and bot_app:
+                                await bot_app.bot.send_message(
+                                    user_id,
+                                    "❌ Thanh toán đã nhận nhưng sản phẩm hiện hết hàng. Vui lòng liên hệ admin."
+                                )
+                            await mark_processed_transaction(tx_id)
+                            matched = True
+                            break
+
+                        if exc.code in (
+                            "direct_order_not_pending",
+                            "direct_order_expired",
+                            "website_direct_order_not_pending",
+                            "website_direct_order_expired",
+                            "mirror_direct_order_not_pending",
+                            "mirror_direct_order_not_found",
+                        ):
+                            logger.info("Skip fulfill for code=%s tx=%s reason=%s", code, tx_id, exc.code)
+                            await mark_processed_transaction(tx_id)
+                            matched = True
+                            break
+
+                        raise
+
+                    await mark_processed_transaction(tx_id)
                     if website_direct_order:
-                        website_direct_order_id = website_direct_order[0]
-                        website_auth_user_id = website_direct_order[1]
-                        website_user_email = website_direct_order[2]
-                        website_order_id = await create_website_order_bulk(
-                            website_auth_user_id,
-                            website_user_email,
-                            product_id,
-                            purchased_items,
-                            unit_price,
-                            order_group,
-                            total_price=expected_amount,
-                            quantity=len(purchased_items),
-                            source_direct_code=code,
-                        )
-                        await set_direct_order_status(order_id, "confirmed")
-                        await set_website_direct_order_status(
-                            website_direct_order_id,
-                            "confirmed",
-                            fulfilled_order_id=website_order_id,
-                        )
                         _remove_website_direct_order_from_maps(website_direct_order)
-                        await mark_processed_transaction(tx_id)
                         logger.info(
                             "✅ Website direct order confirmed: code=%s website_direct_order_id=%s website_order_id=%s",
-                            code,
-                            website_direct_order_id,
-                            website_order_id,
+                            fulfillment.get("code"),
+                            fulfillment.get("website_direct_order_id"),
+                            fulfillment.get("website_order_id"),
                         )
                         await send_payment_relay_notification(
                             relay_token,
                             relay_chat_id,
                             "\n".join([
                                 "✅ Thanh toán thành công (Website)",
-                                f"Mã đơn hệ thống: {order_id}",
-                                f"Mã direct order website: {website_direct_order_id}",
-                                f"Mã đơn website: {website_order_id}",
-                                f"Mã thanh toán: {code}",
+                                f"Mã đơn hệ thống: {fulfillment.get('direct_order_id')}",
+                                f"Mã direct order website: {fulfillment.get('website_direct_order_id')}",
+                                f"Mã đơn website: {fulfillment.get('website_order_id')}",
+                                f"Mã thanh toán: {fulfillment.get('code')}",
                                 f"Mã giao dịch: {tx_id}",
                                 f"Số tiền nhận: {amount:,}đ",
                                 f"Số tiền kỳ vọng: {expected_amount:,}đ",
-                                f"Mã user website: {website_auth_user_id}",
-                                f"Sản phẩm: {product_name}",
-                                f"SL thanh toán: {quantity}",
-                                f"SL giao: {len(purchased_items)}",
-                                f"SL khuyến mãi: {int(bonus_quantity or 0)}",
+                                f"Mã user website: {fulfillment.get('auth_user_id')}",
+                                f"Sản phẩm: {fulfillment.get('product_name')}",
+                                f"SL thanh toán: {fulfillment.get('quantity')}",
+                                f"SL giao: {len(fulfillment.get('items') or [])}",
+                                f"SL khuyến mãi: {int(fulfillment.get('bonus_quantity') or 0)}",
                             ]),
                         )
                     else:
-                        await create_order_bulk(
-                            user_id,
-                            product_id,
-                            purchased_items,
-                            unit_price,
-                            order_group,
-                            total_price=expected_amount,
-                            quantity=len(purchased_items),
-                        )
-                        await set_direct_order_status(order_id, "confirmed")
-                        await mark_processed_transaction(tx_id)
+                        purchased_items = [str(item or "") for item in (fulfillment.get("items") or [])]
+                        product_name = str(fulfillment.get("product_name") or f"#{product_id}")
+                        display_name = await resolve_user_display_name(user_id)
                         await send_payment_relay_notification(
                             relay_token,
                             relay_chat_id,
-                            "\n".join([
-                                "✅ Thanh toán thành công (Bot)",
-                                f"Mã đơn hệ thống: {order_id}",
-                                f"Mã người dùng: {user_id}",
-                                f"Mã thanh toán: {code}",
-                                f"Mã giao dịch: {tx_id}",
-                                f"Số tiền nhận: {amount:,}đ",
-                                f"Số tiền kỳ vọng: {expected_amount:,}đ",
-                                f"Sản phẩm: {product_name}",
-                                f"SL thanh toán: {quantity}",
-                                f"SL giao: {len(purchased_items)}",
-                                f"SL khuyến mãi: {int(bonus_quantity or 0)}",
-                            ]),
+                            build_bot_payment_relay_text(
+                                direct_order_id=int(fulfillment.get("direct_order_id") or 0),
+                                user_id=int(fulfillment.get("user_id") or user_id),
+                                display_name=display_name,
+                                code=str(fulfillment.get("code") or ""),
+                                tx_id=tx_id,
+                                amount=int(amount or 0),
+                                expected_amount=int(expected_amount or 0),
+                                product_name=product_name,
+                                quantity=int(fulfillment.get("quantity") or quantity),
+                                delivered_quantity=len(purchased_items),
+                                bonus_quantity=int(fulfillment.get("bonus_quantity") or 0),
+                            ),
                         )
 
-                    if bot_app and not website_direct_order:
-                        try:
-                            product_name = _resolve_product_name(product, product_id)
-                            description = (product.get("description") or "").strip() if product else ""
-                            format_data = product.get("format_data") if product else None
-                            total_text = f"{expected_amount:,}đ"
-                            header_lines = [
-                                f"Sản phẩm: {product_name}",
-                                f"Số lượng: {len(purchased_items)}",
-                                f"SL thanh toán: {quantity}",
-                                f"Tổng tiền: {total_text}",
-                            ]
-                            if bonus_quantity:
-                                header_lines.append(f"SL khuyến mãi: {bonus_quantity}")
-                            if description:
-                                header_lines.append(f"Mô tả: {description}")
-                            header = "\n".join(header_lines)
-                            formatted_items_plain = format_stock_items(purchased_items, format_data, html=False)
-                            file_buf = make_file(formatted_items_plain, header)
-                            filename = f"{product_name}_{len(purchased_items)}.txt"
+                        if bot_app:
+                            try:
+                                description = str(fulfillment.get("description") or "").strip()
+                                format_data = fulfillment.get("format_data")
+                                total_text = f"{int(fulfillment.get('amount') or expected_amount):,}đ"
+                                header_lines = [
+                                    f"Loại hàng: {product_name}",
+                                    f"Số lượng: {len(purchased_items)}",
+                                    f"SL thanh toán: {int(fulfillment.get('quantity') or quantity)}",
+                                    f"Tổng: {total_text}",
+                                ]
+                                if fulfillment.get("bonus_quantity"):
+                                    header_lines.append(f"Tặng thêm: {int(fulfillment.get('bonus_quantity') or 0)}")
+                                if description:
+                                    header_lines.append(f"Mô tả: {description}")
+                                header = "\n".join(header_lines)
+                                formatted_items_plain = format_stock_items(purchased_items, format_data, html=False)
+                                file_buf = make_file(formatted_items_plain, header)
+                                filename = f"{product_name}_{len(purchased_items)}.txt"
 
-                            success_text = (
-                                "✅ Thanh toán thành công!\n\n"
-                                f"🧾 {product_name} | SL: {len(purchased_items)}\n"
-                                f"💰 Tổng: {total_text}"
-                            )
-                            if bonus_quantity:
-                                success_text += f"\n🎁 Tặng thêm: {bonus_quantity}"
-                            description_block = format_description_block(description)
-                            if len(purchased_items) > 5:
-                                msg = await bot_app.bot.send_document(
-                                    chat_id=user_id,
-                                    document=file_buf,
-                                    filename=filename,
-                                    caption=success_text
+                                success_text = build_purchase_summary_text(
+                                    product_name=product_name,
+                                    delivered_quantity=len(purchased_items),
+                                    total_text=total_text,
+                                    bonus_quantity=int(fulfillment.get("bonus_quantity") or 0),
+                                    lang="vi",
                                 )
-                                mark_bot_message(user_id, msg.message_id)
-                            else:
-                                items_formatted = "\n\n".join(format_stock_items(purchased_items, format_data, html=True))
-                                msg = await bot_app.bot.send_message(
-                                    chat_id=user_id,
-                                    text=f"{success_text}\n\n{description_block}🔐 Account:\n{items_formatted}",
-                                    parse_mode="HTML"
-                                )
-                                mark_bot_message(user_id, msg.message_id)
-                        except Exception:
-                            pass
+                                if len(purchased_items) > 5:
+                                    msg = await bot_app.bot.send_document(
+                                        chat_id=user_id,
+                                        document=file_buf,
+                                        filename=filename,
+                                        caption=success_text
+                                    )
+                                    mark_bot_message(user_id, msg.message_id)
+                                else:
+                                    msg = await bot_app.bot.send_message(
+                                        chat_id=user_id,
+                                        text=build_delivery_message(
+                                            summary_text=success_text,
+                                            purchased_items=purchased_items,
+                                            format_data=format_data,
+                                            description=description,
+                                            lang="vi",
+                                            html=True,
+                                        ),
+                                        parse_mode="HTML"
+                                    )
+                                    mark_bot_message(user_id, msg.message_id)
+                            except Exception:
+                                pass
                     matched = True
                     break
             if matched:

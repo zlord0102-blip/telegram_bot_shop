@@ -64,6 +64,40 @@ Goal: Improve Admin Dashboard and sales operations, including dynamic pricing/pr
   - Redesign sort/filter control row (`Sắp xếp` + `Hiện cả hết hàng`) for cleaner, modern UI/UX.
 - Current scope add-on: storefront filter behavior tweak:
   - `Hiện cả hết hàng` must be enabled by default on initial load and after filter reset.
+- Current scope add-on (latest request): full storefront UI reskin:
+  - Rebuild Website storefront visual/UI to match PopoteShop style direction (`https://popoteshop.xyz/`) as closely as possible.
+  - Target sections from user screenshots: dark neon navbar, hero with central search/stats, features cards, product grid cards, FAQ accordion/list style, and footer navigation block.
+  - Keep existing Website checkout/order/auth logic intact while changing UI structure and CSS theme.
+- Current scope add-on (latest request): storefront post-reskin fixes + controls:
+  - FAQ section must be CRUD-configurable from Website Dashboard settings.
+  - Remove footer navigation block from storefront.
+  - Stats form (`Feedback rating / Products sold / Total customers`) must support show/hide from Dashboard:
+    - hide entire stats form
+    - hide each small stats box independently.
+  - Fix storefront color bugs (notably checkout preview contrast).
+  - Signup flow must show explicit email-verification instruction form after successful signup when confirmation email is required.
+  - Fix red UI artifacts (small red blocks) appearing on product cards/hero.
+- Current scope add-on (latest request): storefront logo + sizing refinement:
+  - Replace navbar logo mark with provided asset `storefront-web/nano_banana_removed.png`.
+  - Reduce global UI roughness by shrinking form/control sizes and typography scale to be closer to reference.
+- Current scope add-on (latest request): storefront branding rename:
+  - Update storefront header brand/logo label and browser title text to `Destiny Store`.
+- Current scope add-on (latest request): hero visual alignment refinement:
+  - Match hero block to provided sample by:
+    - changing brand-highlight color style in hero title (closer to outlined blue tone),
+    - removing large outer border container around hero form area.
+- Current scope add-on (latest request): Website Dashboard product-image upload:
+  - Add image-upload UI in Website Dashboard `Products` so each product can upload banner image file directly for storefront display.
+- Current scope add-on (latest request): storefront product-banner opacity fix:
+  - Remove dark overlay/opacity layer on Product banner images so uploaded covers display full-color.
+- Current scope add-on (latest request): navbar icon refinement:
+  - Hide `$` icon button and align remaining two header action icons (auth + cart) to match reference style.
+- Current scope add-on (latest request): Website Product channel-split clarification:
+  - Only `Stock` (inventory quantity) is synchronized/shared with Telegram Bot.
+  - Website Product fields (`Tên`, `Vị trí`, `Giá`, tiers/promo, hiển thị, banner...) must be independently configurable from Bot Product fields.
+- Current scope add-on (latest request): Website Products hide/soft-delete regression fix:
+  - User reports Website Dashboard product actions `Ẩn` and `Xóa mềm` currently do not work.
+  - Need compatibility fallback so actions still work when DB has not yet applied website-channel split columns.
 - Current scope add-on (new request): Bot Admin Dashboard refinement batch:
   - Products page: add separate `Đang ẩn` tab in `Danh sách sản phẩm`, showing hidden products separately from normal visible products.
   - Orders page: align displayed columns/data with Dashboard latest-orders table.
@@ -108,6 +142,51 @@ Goal: Improve Admin Dashboard and sales operations, including dynamic pricing/pr
 - Current scope add-on (latest request): SePay transaction logging refinement:
   - Even when `SEPAY_DEBUG=false`, new transactions should still log `TX id=...`.
   - Keep noisy full-history logging disabled.
+- Current scope add-on (latest request): bot checkout guard UX refinement:
+  - When user enters quantity before choosing payment method, do not return stock-insufficient error.
+  - Instead, send reminder text and re-render payment method menu buttons (`VietQR`/`Xóa`).
+- Current scope add-on (latest request): analyze the full Telegram Bot Dashboard logic end-to-end:
+  - Trace bot dashboard UI routes/pages, API routes, shared DB access, and Telegram bot/payment integrations.
+  - Produce a repo-grounded architecture/logic summary for current bot dashboard behavior.
+- Current scope add-on (latest request): identify current optimization/fix priorities without adding new features:
+  - Evaluate the existing Bot Dashboard architecture and workflows for areas that should be tightened, simplified, or made safer.
+  - Prioritize issues by operational impact and correctness risk rather than feature expansion.
+- Current scope add-on (latest request): begin implementation of optimization phase 1:
+  - Move manual financial admin actions (`Deposits`, `Withdrawals`, `USDT`) off browser-side direct Supabase mutations and behind server-side admin endpoints.
+  - Reduce risk of partial updates and make status/balance changes easier to harden centrally.
+- Current scope add-on (latest request): continue optimization phase 2 hardening:
+  - Move bot instant-purchase (`balance` / `USDT`) from Python-only shared helper to RPC-first mutation path with DB-side locking, while keeping Python fallback for environments that have not applied new SQL yet.
+- Current scope add-on (latest request): begin optimization phase 3:
+  - Move Bot Dashboard `Dashboard`, `Reports`, and `Users` heavy client-side aggregations to admin-protected snapshot APIs backed by new SQL helper functions where practical.
+  - Reduce browser-side large-row scans from `orders` / `direct_orders` and centralize metric calculation server-side with fallback logic.
+- Current scope add-on (latest request): consolidate all project SQL into one bootstrap file:
+  - Create one all-in-one SQL file that contains the full current database schema + later migration files in safe execution order.
+  - Keep existing split SQL files unchanged; the new file is for fresh setup / DB transfer convenience only.
+- Current scope add-on (latest request): make the all-in-one bootstrap SQL safer to rerun on an existing DB:
+  - User hit `ERROR: 42710: policy "Admin can read own" for table "admin_users" already exists`.
+  - Need to harden the combined bootstrap file so policy creation does not fail when rerun against a non-empty/existing Supabase database.
+- Current scope add-on (latest request): Bot Dashboard data-table and reporting refinement batch:
+  - Dashboard: add `Tên người dùng` column showing Telegram display name (`FirstName + LastName`) when available.
+  - Stocks: product dropdown should list only active/non-deleted products, and page needs quick tab switch between `Đang hoạt động` and `Đã hủy, Ẩn`.
+  - Orders: add pagination.
+  - Users: fetch full user list reliably, add pagination, and add `Tên người dùng` column.
+  - Reports: add explicit calendar-style period filters such as `Hôm nay`, `Tháng này`, `Quý này` instead of only rolling windows like current `30 ngày gần nhất`.
+- Current scope add-on (latest request): Bot Dashboard broadcast/report refinement:
+  - Users page: sending broadcast to all users is currently too slow and needs operational speedup.
+  - Reports page: add explicit month picker and month-to-month comparison option.
+- Current scope add-on (latest request): Bot Reports UX/detail refinement:
+  - Replace simple month input with a month-only picker UI styled closer to the provided calendar screenshot.
+  - Add `Từ trước đến nay` reporting option.
+  - When comparing 2 months, show absolute money difference in addition to percentage.
+- Current scope add-on (latest request): Bot Reports picker layering hotfix:
+  - Month picker popover is rendering underneath the report summary cards and must appear above them.
+- Current scope add-on (latest request): Bot Telegram message/history + admin broadcast preset refinement:
+  - Bot payment-success and relay text blocks should be reformatted into cleaner Vietnamese multi-line layouts, including display-name and quantity/detail lines.
+  - Bot `Lịch sử` output should reuse the same account-delivery formatting shown after a successful purchase.
+  - Bot Dashboard `Users` page should support saving multiple broadcast title presets and prepending the selected title to broadcast content.
+- Current scope add-on (latest request): maximize Bot Dashboard broadcast throughput:
+  - Users page broadcast is still perceived as too slow.
+  - Need to optimize `/api/telegram/send` for the fastest practical all-user dispatch, not just the previous simple batch-delay approach.
 
 Success Criteria:
 - Existing completed behaviors remain working:
@@ -162,8 +241,11 @@ Success Criteria:
 - Payment relay notifications should be fully Vietnamese and include full product name display.
 - SePay checker should avoid full-history transaction scans and process only new transactions each cycle.
 - SePay checker should keep `TX id=...` logs for newly seen transactions even when debug mode is off.
+- Bot checkout should guard against missing payment selection and guide user with payment menu instead of misleading stock error.
 - `Mô tả` field in Bot Products add/edit flow supports multi-line input (line breaks preserved).
 - `Mô tả` multiline support should not stretch all other inputs in the add form.
+- Website Product data model should treat only stock as shared cross-channel; all merchandising fields for Website are channel-specific.
+- Provide a code-grounded analysis that explains the current Bot Dashboard structure, data flow, operational pages, and integration points without changing behavior.
 
 Constraints/Assumptions:
 - Work within this repo only.
@@ -197,6 +279,7 @@ Constraints/Assumptions:
 - Stock content can contain multiple comma-separated columns; mail/account field index must be operator-configurable in UI/API. **ASSUMED**
 - Custom-check history persistence can use browser local storage because this is an admin-side UX preference (not core server data). **ASSUMED**
 - SePay `tx_id` is treated as monotonic numeric identifier for checkpoint compare; fallback idempotency still uses `processed_transactions`. **ASSUMED**
+- User clarified product-channel behavior: only stock is shared between Bot and Website; all other Website product fields are independent from Bot fields. **CONFIRMED**
 
 Key Decisions:
 - Keep prior direct-order timeout at 10 minutes (`cancelled`) unchanged.
@@ -241,8 +324,99 @@ Key Decisions:
 - SePay logging decision:
   - Keep `TX id=...` log at `INFO` for transactions that pass checkpoint filter (newly seen set).
   - Keep verbose payload diagnostics under `SEPAY_DEBUG`.
+- Checkout UX decision:
+  - Missing payment method selection must short-circuit quantity flow with explicit prompt + inline payment keyboard.
+  - Avoid falling through to stock validation when payment context is absent.
+- Analysis finding for current request:
+  - Bot Dashboard is a Next.js admin app that uses Supabase Auth session + `admin_users` RLS role checks on the client shell, then reads/writes most operational tables directly from browser-side page components.
+  - Bot Dashboard server API routes are reserved mainly for side effects or privileged integrations that the browser cannot perform safely/effectively itself:
+    - Telegram outbound send / chat logging
+    - manual direct-order fulfillment + stock delivery
+    - stock custom-check against external inbox providers
+    - payment relay notifications
+  - Telegram bot runtime reads the same `products` / `stock` / `settings` / order tables through Python database abstractions, so Dashboard settings/data changes are reflected in bot behavior without a separate backend sync step.
+  - SePay checker is the async reconciliation layer that confirms deposits/direct orders, delivers stock, updates statuses, and keeps `processed_transactions` + `sepay_last_seen_tx_id` for idempotent polling.
+- Optimization finding for current request:
+  - Highest-value improvements are architectural hardening and operational safety, not UI expansion:
+    - reduce client-side multi-step financial mutations,
+    - centralize duplicated order/user/product enrichment logic,
+    - improve transactionality/locking around stock + fulfillment paths,
+    - reduce large client-side scans/aggregations on dashboard pages,
+    - add stronger observability around payment/order failures.
+- Phase-1 implementation decision:
+  - Start with Bot Dashboard manual financial flows only:
+    - `deposits`
+    - `withdrawals`
+    - `binance_deposits`
+    - `usdt_withdrawals`
+  - Introduce admin-protected API routes and switch the affected pages to `fetch(...)` these endpoints instead of mutating balances/status directly from the browser.
+  - If needed for correctness, add new SQL helper functions in a new SQL file rather than editing old SQL files.
+  - Phase-1 route/layout decision:
+    - Use one shared server route for manual finance actions (`/api/admin-finance`) instead of separate endpoints per page.
+    - Add shared server admin-auth helper for bearer-token validation + `admin_users` check.
+    - Prefer new SQL RPC helpers for atomic confirm/cancel flows, with temporary server-side fallback logic when the SQL file has not been applied yet.
+- Phase-2 implementation decision:
+  - Prioritize the duplicated direct-order fulfillment mutation path:
+    - bot manual fulfill API
+    - website manual fulfill API
+    - `sepay_checker.py` payment-confirm flow
+  - Centralize stock reservation + order creation + direct-order status updates in new SQL RPC helpers, then call them from both Next.js routes and Python DB wrappers.
+  - Keep Telegram send / relay notification / response formatting in the caller layer; only the critical DB mutation path moves into shared fulfillment helpers.
+  - Preserve fallback behavior when the new SQL file has not been applied yet by keeping server/Python fallback implementations.
+  - Remaining phase-2 scope:
+    - centralize bot instant-purchase path in `handlers/shop.py` so balance purchases stop duplicating:
+      - get stock
+      - mark stock sold
+      - create `orders`
+    - use shared Python DB helper for immediate purchases before any further refactor of UI/message formatting.
+- Phase-2 continuation decision:
+  - After centralizing bot instant-purchase into shared Python helper, continue hardening that path with a new Supabase SQL RPC so stock reservation + balance deduction + order creation can run under one DB-controlled critical section.
+  - Keep `database/supabase_db.py` RPC-first with fallback to the current Python helper behavior when the SQL file has not yet been applied.
+- Phase-3 implementation decision:
+  - Start with the 3 highest-traffic Bot admin pages that still aggregate directly in the browser:
+    - `admin-dashboard/app/(admin)/page.tsx`
+    - `admin-dashboard/app/(admin)/reports/page.tsx`
+    - `admin-dashboard/app/(admin)/users/page.tsx`
+  - Add a new SQL file with bot-admin analytics snapshot functions, then expose them via admin-protected API routes with server-side fallback logic when the SQL has not been deployed yet.
+  - Keep page UI mostly unchanged; replace direct Supabase browser scans with lightweight `fetch(...)` calls through a new client helper.
+- SQL consolidation decision:
+  - Add a new single-file bootstrap schema that concatenates the current project SQL files in dependency order.
+  - Preserve all existing per-feature SQL files because they still document incremental changes and are referenced in the ledger/code.
+- Bootstrap rerun-hardening decision:
+  - Patch `supabase_schema_all_in_one.sql` to drop existing policies before recreating them, instead of changing the split source SQL files.
+  - Scope this fix to the combined bootstrap file because that is the file intended for fresh setup / transfer convenience.
 - Product description input UX decision: use `textarea` (same style family as Users broadcast message form) instead of single-line `input`.
 - Product description layout decision: place add-form description textarea in its own full-width row (`form-section`) to preserve original size of other inputs.
+- Website product split decision:
+  - Keep `products.id` and stock source shared.
+  - Move Website display/merchandising behavior to Website-specific fields (`website_*`) and Website visibility controls only.
+  - Do not let Website Product logic depend on Bot hide/delete/name/price fields except stock join by `product_id`.
+- Bot dashboard refinement-batch decision:
+  - Keep the scope on Bot admin routes/pages only.
+  - Reuse the current Bot analytics snapshot/API path where practical, but extend the payload/UI for display-name and date-filter needs rather than reverting to raw browser scans.
+  - Treat `Tên người dùng` as Telegram profile display name assembled from `first_name` + `last_name` when those fields exist; otherwise fall back gracefully to empty text. **ASSUMED**
+  - For Stocks page product filter tabs, `Đang hoạt động` means products with `is_deleted = false` and `is_hidden = false`; `Đã hủy, Ẩn` means hidden or soft-deleted products. **ASSUMED**
+  - For Reports filter semantics:
+    - `Hôm nay` = local calendar day in `Asia/Ho_Chi_Minh`
+    - `Tháng này` = from first day of current month to now
+    - `Quý này` = from first day of current quarter to now
+    - keep existing rolling metrics only as supporting context if still useful. **ASSUMED**
+- Latest broadcast/report refinement decision:
+  - Keep Users broadcast on the existing admin API route, but replace naive serial send behavior with bounded parallel/batch dispatch so it finishes significantly faster without overwhelming Telegram.
+  - Extend Bot Reports snapshot API to accept explicit calendar-month parameters and optional compare-month parameter instead of adding client-only calculations.
+  - `Tháng tùy chọn` is interpreted as a full calendar month in `Asia/Ho_Chi_Minh`, and month comparison should compare two full selected months. **ASSUMED**
+- Latest Reports UX/detail decision:
+  - Keep report calculations server-side; extend the same snapshot flow for `all_time` instead of adding client-only totals.
+  - The month picker can be implemented as a custom month-only popover/grid in dashboard UI; no external date-picker package is required. **ASSUMED**
+  - For `all_time`, comparison is informationally not meaningful, so UI should avoid implying a comparison period and can treat delta as neutral/empty. **ASSUMED**
+- Latest Reports picker-hotfix decision:
+  - Treat the overlap as a stacking-context/z-index issue in dashboard CSS and fix it without changing report logic or picker behavior. **ASSUMED**
+- Latest bot-message/broadcast refinement decision:
+  - Reuse shared formatting helpers where possible so bot success messages, relay notifications, and history output do not drift.
+  - Store broadcast title presets centrally in Dashboard settings if there is already a suitable settings persistence path; avoid making this browser-only when a server-backed setting is straightforward. **ASSUMED**
+- Latest broadcast-throughput decision:
+  - Replace the fixed batch + sleep loop in `admin-dashboard/app/api/telegram/send/route.ts` with a paced worker-pool / rate-limiter design so outbound sends can stay close to Telegram-safe throughput continuously instead of idling between coarse batches.
+  - Keep retry-after handling for `429` and prefer sustained throughput over simplistic single-loop batching. **ASSUMED**
 
 Progress State:
 - Done:
@@ -917,11 +1091,333 @@ Progress State:
       - Added helper log line for newly seen transactions: `TX id=... amount=... content=...`.
       - This transaction log now runs even when `SEPAY_DEBUG=false` (after checkpoint filter).
       - Kept verbose payload diagnostics behind `SEPAY_DEBUG`.
+  - Completed bot checkout guard UX refinement:
+    - `handlers/shop.py`:
+      - `show_product(...)` now clears stale quantity/payment context when opening a product (`buying_max`, `buying_currency`).
+      - `handle_buy_quantity(...)` now detects missing payment selection and sends reminder + inline payment menu buttons instead of falling through to quantity/stock validation.
+  - Began PopoteShop storefront reskin implementation:
+    - `storefront-web/components/StorefrontPage.tsx`:
+      - Replaced previous homepage structure with Popote-style sections (`pp-navbar`, hero, features, product grid, FAQ, footer) while keeping checkout/auth/order logic in place.
+    - `storefront-web/app/globals.css`:
+      - Added initial Popote-style theme block (`pp-*`) but file still contains older legacy storefront styles in parallel.
+      - Remaining work: consolidate conflicting rules and tune typography/spacing for closer visual parity.
+  - Completed PopoteShop reskin pass-2 for storefront:
+    - `storefront-web/components/StorefrontPage.tsx`:
+      - Removed unused legacy banner/carousel logic from active render path.
+      - Split visual behavior by route mode:
+        - `home`: hero + features + shop + FAQ + footer.
+        - `products/search`: focused shop section with search-summary text.
+      - Kept Website auth/checkout/order status logic intact.
+    - `storefront-web/app/globals.css`:
+      - Added final override block for Popote-style dark/neon look (navbar, hero, search dropdown, stats, features, product cards, FAQ, footer).
+      - Rebalanced typography sizing after initial oversize pass.
+  - Completed storefront post-reskin fixes from latest screenshots:
+    - `admin-dashboard/app/(website-dashboard)/website/settings/page.tsx`:
+      - Added FAQ CRUD settings (`website_faq_items`) with add/edit/delete + per-item enabled toggle.
+      - FAQ loader now preserves explicit empty list (`[]`) instead of restoring defaults.
+      - Added stats visibility toggles:
+        - `website_show_stats_section`
+        - `website_show_stats_feedback`
+        - `website_show_stats_sold`
+        - `website_show_stats_customers`
+    - `storefront-web/lib/shop.ts`:
+      - Extended Website settings contract with FAQ + stats-visibility keys.
+      - Added parser/fallback for FAQ JSON and new stats booleans.
+      - FAQ parser now respects explicit empty list (`[]`) so admin can hide all FAQ entries.
+    - `storefront-web/components/StorefrontPage.tsx`:
+      - FAQ section now renders from Dashboard-configured FAQ list.
+      - Removed footer navigation block from storefront.
+      - Hero stats section now supports hide/show full section and per-box rendering.
+      - Signup flow now shows explicit email-verification instruction block after sign-up when session is pending email confirm.
+    - `storefront-web/app/globals.css`:
+      - Fixed checkout preview contrast (dark panel + readable text).
+      - Added styles for email-verification instruction block.
+      - Removed red artifact block by neutralizing `preset-netflix::before` in Popote root.
+  - Completed storefront logo + sizing refinement from latest request:
+    - `storefront-web/components/StorefrontPage.tsx`:
+      - Replaced navbar logo mark with provided asset `nano_banana_removed.png` via `next/image`.
+    - `storefront-web/app/globals.css`:
+      - Added dedicated sizing pass to reduce roughness:
+        - Smaller nav/form/control typography.
+        - Smaller hero title/search/stats.
+        - Smaller product-card price/title/action sizes.
+        - Smaller checkout/auth form element sizes.
+  - Completed storefront brand rename request (`Destiny Store`):
+    - `storefront-web/app/layout.tsx`:
+      - Updated metadata title to `Destiny Store` (browser tab text).
+    - `storefront-web/components/StorefrontPage.tsx`:
+      - Updated navbar brand alt/text to `Destiny Store`.
+      - Updated hero headline brand text to `DESTINY STORE`.
+    - `storefront-web/app/icon.png`:
+      - Added app icon (copied from `storefront-web/logo.png`) so browser tab has branded logo instead of default icon.
+    - `storefront-web/app/globals.css`:
+      - Added `.pp-brand-name` sizing/responsive styles for the new navbar brand label.
+  - Completed hero visual alignment refinement from latest feedback:
+    - `storefront-web/app/globals.css`:
+      - Updated hero highlighted brand text to outlined-blue style closer to reference.
+      - Removed large outer border/panel styling around hero container (`.pp-hero` now no border/background panel).
+  - Completed Website Dashboard per-product image upload support:
+    - `admin-dashboard/app/(website-dashboard)/website/products/page.tsx`:
+      - Added `website_banner_url` in Website Products query/mapping and add/edit save payload.
+      - Added image upload inputs for add/edit product forms; upload writes to Supabase Storage bucket `admin-uploads`.
+      - Upload result is saved as `storage://admin-uploads/...` URI and table now shows banner URL column.
+    - `storefront-web/lib/shop.ts`:
+      - Added product-asset resolver for `storage://bucket/path` to signed URL at runtime.
+      - Storefront product banner/logo now render uploaded storage assets correctly.
+  - Completed storefront product-banner opacity fix:
+    - `storefront-web/components/StorefrontPage.tsx`:
+      - Removed gradient overlay from product cover background image rendering.
+      - Product banner images now render with direct `url(...)` background (no dim layer).
+  - Completed navbar icon refinement:
+    - `storefront-web/components/StorefrontPage.tsx`:
+      - Removed `$` action button from navbar.
+      - Replaced auth/cart emoji glyphs with inline SVG icons matching sample style.
+    - `storefront-web/app/globals.css`:
+      - Added SVG icon styling under `.pp-nav-icon` for consistent stroke/size rendering.
+  - Completed Website Product channel-split implementation (stock-only sync):
+    - `admin-dashboard/app/(website-dashboard)/website/products/page.tsx`:
+      - Switched Website Products management to website-only fields:
+        - `website_name`, `website_sort_position`, `website_price`, `website_price_tiers`,
+        - `website_promo_buy_quantity`, `website_promo_bonus_quantity`,
+        - `website_description`, `website_banner_url`, `website_format_data`,
+        - `website_enabled`, `website_deleted`.
+      - Removed Website actions dependency on bot flags `is_hidden` / `is_deleted`.
+      - Added Website `Vị trí` add/edit + sorted table by Website position.
+      - Kept Website soft-delete/hide behavior in website-only flags.
+    - `storefront-web/lib/shop.ts`:
+      - Removed Website product-list dependency on bot hide/delete flags (`is_hidden`, `is_deleted`).
+      - Stopped using bot-filtered stock RPC path for Website storefront product list/detail.
+      - Website storefront now reads product rows directly and maps/filter/sort using website-only flags/fields.
+      - Added website-specific fields in mapper:
+        - `website_sort_position`
+        - `website_format_data`
+        - `website_deleted`
+      - Product ordering on storefront now follows Website `website_sort_position`.
+    - Website Dashboard name consistency improvements:
+      - `admin-dashboard/app/(website-dashboard)/website/stock/page.tsx` now loads `website_name` (fallback `name`) for product selector.
+      - `admin-dashboard/app/(website-dashboard)/website/orders/page.tsx`, `admin-dashboard/app/(website-dashboard)/website/direct-orders/page.tsx`, and `admin-dashboard/app/(website-dashboard)/website/page.tsx` now prefer `products.website_name` when displaying product names.
+      - `admin-dashboard/app/api/website-direct-orders/fulfill/route.ts` relay/fulfill messaging now prefers `website_name`.
+  - Added new SQL migration file for Website-only Product fields:
+    - `supabase_schema_website_product_channel_split.sql`:
+      - Adds:
+        - `products.website_sort_position`
+        - `products.website_format_data`
+        - `products.website_deleted`
+      - Includes safe backfill from existing values for initial continuity.
+      - Adds Website visibility/order index.
+  - Completed Website Products action compatibility fallback:
+    - `admin-dashboard/app/(website-dashboard)/website/products/page.tsx`:
+      - Added runtime mode detection:
+        - `website` mode when `website_*` columns are available.
+        - `legacy` mode when select fails and falls back to bot soft-delete fields.
+      - In `legacy` mode, action buttons now use:
+        - hide/unhide via `is_hidden`
+        - soft-delete/restore via `is_deleted` + `deleted_at`
+      - Added on-screen compatibility notice with required SQL migration filename.
+  - Completed Bot Dashboard phase-1 finance hardening:
+    - Added shared admin auth helper:
+      - `admin-dashboard/app/api/_shared/adminAuth.ts`
+    - Added shared finance API route:
+      - `admin-dashboard/app/api/admin-finance/route.ts`
+      - supports `deposit`, `withdrawal`, `binance_deposit`, `usdt_withdrawal`
+      - supports `confirm` / `cancel`
+      - prefers SQL RPC helpers and falls back to server-side mutations if RPCs are not deployed yet
+    - Added client helper:
+      - `admin-dashboard/lib/adminFinanceClient.ts`
+    - Bot admin pages now call server route instead of browser-side balance/status mutations:
+      - `admin-dashboard/app/(admin)/deposits/page.tsx`
+      - `admin-dashboard/app/(admin)/withdrawals/page.tsx`
+      - `admin-dashboard/app/(admin)/usdt/page.tsx`
+    - Added new SQL helper file for atomic manual finance actions:
+      - `supabase_schema_bot_manual_finance_actions.sql`
+    - Fixed TypeScript issues in `admin-dashboard/app/api/admin-finance/route.ts` so union narrowing and error mapping compile cleanly.
+  - Completed phase-2 direct-order fulfillment hardening for shared mutation path:
+    - Added new SQL helper file:
+      - `supabase_schema_direct_order_fulfillment.sql`
+      - RPCs:
+        - `fulfill_bot_direct_order(...)`
+        - `fulfill_website_direct_order(...)`
+    - Added shared Next.js fulfillment helper:
+      - `admin-dashboard/app/api/_shared/directOrderFulfillment.ts`
+      - route-layer fallback remains when SQL RPCs are not deployed yet
+    - Rewired manual fulfill routes to shared fulfillment path:
+      - `admin-dashboard/app/api/direct-orders/fulfill/route.ts`
+      - `admin-dashboard/app/api/website-direct-orders/fulfill/route.ts`
+    - Added Python DB wrappers + fallback implementations:
+      - `database/supabase_db.py`
+      - `database/db.py`
+      - new shared exception: `DirectOrderFulfillmentError`
+    - Rewired `sepay_checker.py` payment-confirm flow to call shared fulfillment helpers instead of manually:
+      - reserving stock
+      - creating `orders` / `website_orders`
+      - updating direct-order statuses
+    - Website manual fulfill fallback now also keeps mirrored `direct_orders` status in sync by `code`.
+  - Completed phase-2 bot instant-purchase centralization:
+    - Added shared Python helper:
+      - `fulfill_bot_balance_purchase(...)`
+      - implemented in:
+        - `database/supabase_db.py`
+        - `database/db.py`
+    - Rewired duplicated instant-purchase paths in `handlers/shop.py` to the shared helper:
+      - direct balance purchase after quantity entry
+      - direct balance purchase from callback flow
+    - Added shared sender helper in `handlers/shop.py`:
+      - `send_purchase_delivery_result(...)`
+    - `handlers/shop.py` no longer directly calls:
+      - `get_available_stock_batch(...)`
+      - `mark_stock_sold_batch(...)`
+      - `create_order_bulk(...)`
+  - Completed phase-2 bot instant-purchase RPC-first hardening:
+    - Added new SQL helper file:
+      - `supabase_schema_bot_balance_purchase_fulfillment.sql`
+      - RPC:
+        - `fulfill_bot_balance_purchase(...)`
+    - Updated `database/supabase_db.py`:
+      - `fulfill_bot_balance_purchase(...)` now tries SQL RPC first, then falls back to Python helper logic when the RPC is not deployed yet.
+      - Added RPC payload normalization and error mapping for:
+        - `product_not_found`
+        - `insufficient_balance`
+        - `insufficient_usdt_balance`
+    - Updated `handlers/shop.py`:
+      - Treats `product_not_found` the same as out-of-stock during purchase.
+      - Removed now-unused direct balance mutation imports after helper consolidation.
+  - Completed phase-3 bot admin analytics hardening for `Dashboard` / `Reports` / `Users`:
+    - Added new SQL helper file:
+      - `supabase_schema_bot_admin_analytics.sql`
+      - functions:
+        - `admin_bot_dashboard_snapshot(...)`
+        - `admin_bot_reports_snapshot(...)`
+        - `admin_bot_users_snapshot(...)`
+    - Added shared admin analytics server helper:
+      - `admin-dashboard/app/api/_shared/adminAnalytics.ts`
+      - Uses RPC-first loading with server-side fallback logic when analytics SQL has not been deployed yet.
+    - Added admin-protected API routes:
+      - `admin-dashboard/app/api/admin-analytics/dashboard/route.ts`
+      - `admin-dashboard/app/api/admin-analytics/reports/route.ts`
+      - `admin-dashboard/app/api/admin-analytics/users/route.ts`
+    - Added client helper:
+      - `admin-dashboard/lib/adminAnalyticsClient.ts`
+    - Rewired Bot admin pages to fetch snapshots instead of browser-side raw Supabase scans:
+      - `admin-dashboard/app/(admin)/page.tsx`
+      - `admin-dashboard/app/(admin)/reports/page.tsx`
+      - `admin-dashboard/app/(admin)/users/page.tsx`
+  - Completed SQL consolidation bootstrap file:
+    - Created `supabase_schema_all_in_one.sql`.
+    - Included all current project SQL files in dependency order with `BEGIN/END` section markers.
+    - Verified expected 9 SQL blocks are present in the combined file.
+  - Completed bootstrap rerun hardening for policy creation:
+    - Patched `supabase_schema_all_in_one.sql` RLS block to `DROP POLICY IF EXISTS ...` before each `CREATE POLICY`.
+    - Covers all bootstrap-defined policies on:
+      - `admin_users`, `users`, `products`, `stock`, `orders`, `deposits`, `withdrawals`, `settings`,
+      - `format_templates`, `binance_deposits`, `usdt_withdrawals`, `processed_transactions`,
+      - `direct_orders`, `telegram_messages`, `storage.objects`.
+  - Completed Bot Dashboard refinement batch:
+    - Dashboard:
+      - added `Tên người dùng` column in recent-orders table.
+      - dashboard analytics helper now enriches recent orders with `display_name` from `users.first_name/last_name` when present.
+    - Stock:
+      - product dropdown now switches between `Đang hoạt động` and `Đã hủy, Ẩn`.
+      - active tab lists only products with `is_hidden = false` and `is_deleted = false`.
+    - Orders:
+      - added pagination (`50` rows / page).
+    - Users:
+      - replaced old `limit=200` snapshot behavior with server-side full-user loading + page slicing/search-aware filtering.
+      - added pagination (`50` rows / page), `Tổng` counter, and `Tên người dùng` column.
+    - Reports:
+      - replaced rolling-window-only UI with explicit period filters: `Hôm nay`, `Tháng này`, `Quý này`.
+      - reports API now computes selected calendar-period metrics/trend/top-products server-side.
+  - Completed Telegram profile-name persistence support:
+    - Added new SQL file `supabase_schema_bot_user_profile_names.sql` for `users.first_name` and `users.last_name`.
+    - Added the new SQL block into `supabase_schema_all_in_one.sql`.
+    - Updated bot user upsert paths (`start`, `chat_logger`, `shop`, sqlite/supabase DB layers) to persist latest Telegram first/last names when available.
+  - Completed latest Users broadcast speedup:
+    - `admin-dashboard/app/api/telegram/send/route.ts`:
+      - switched to shared admin-session guard via `requireAdminSession(...)`.
+      - replaced fully serial broadcast loop with bounded batch dispatch (`15` recipients/batch, `700ms` delay between batches).
+      - added Telegram `429` retry handling using `retry_after`.
+      - dedupes and normalizes user IDs before dispatch.
+    - `admin-dashboard/app/(admin)/users/page.tsx`:
+      - broadcast status now shows both sent and failed counts.
+  - Completed latest Reports month-selection + month-compare refinement:
+    - `admin-dashboard/app/api/_shared/adminAnalytics.ts`:
+      - extended reports snapshot model to support `custom_month` plus explicit `month` / `compareMonth`.
+      - reports snapshot now returns normalized `selectedMonth` and `comparisonMonth`.
+      - revenue comparison now works for arbitrary selected month pairs instead of only implicit previous periods.
+    - `admin-dashboard/app/api/admin-analytics/reports/route.ts`:
+      - accepts `period=custom_month` with `month` and `compareMonth` query params.
+    - `admin-dashboard/lib/adminAnalyticsClient.ts`:
+      - `fetchReportsSnapshot(...)` now accepts an options object (`period`, `month`, `compareMonth`).
+    - `admin-dashboard/app/(admin)/reports/page.tsx`:
+      - added `Theo tháng` filter tab.
+      - added month-picker + compare-month inputs for direct month-vs-month comparison.
+  - Completed latest Reports UX/detail refinement:
+    - `admin-dashboard/app/api/_shared/adminAnalytics.ts`:
+      - added `all_time` report period support.
+      - `all_time` snapshot aggregates totals across all completed orders/direct orders and groups trend rows by month for safer table size.
+      - revenue payload now includes absolute money delta (`deltaAmount`) and comparison-availability flag (`hasComparison`).
+    - `admin-dashboard/app/api/admin-analytics/reports/route.ts`:
+      - accepts `period=all_time`.
+    - `admin-dashboard/lib/adminAnalyticsClient.ts`:
+      - updated report types for `all_time`, `deltaAmount`, and `hasComparison`.
+    - `admin-dashboard/app/(admin)/reports/page.tsx`:
+      - replaced native `input type=\"month\"` controls with a custom month-only popover picker.
+      - added `Từ trước đến nay` segmented filter.
+      - comparison copy now shows absolute money difference and percent together when applicable.
+      - all-time view suppresses misleading comparison messaging and switches trend title to monthly all-time trend.
+    - `admin-dashboard/app/globals.css`:
+      - added styles for report month-picker popover/grid and responsive filter wrapping.
+  - Completed latest Reports picker layering hotfix:
+    - `admin-dashboard/app/globals.css`:
+      - raised `report-filter-card` to its own higher stacking context (`position/z-index/isolation`).
+      - increased `month-picker` and `month-picker-popover` z-index so the popover renders above summary cards that also create stacking contexts via the `rise` animation transform.
+  - Completed latest Bot Telegram message/history + broadcast-preset refinement:
+    - Added new shared helper:
+      - `helpers/purchase_messages.py`
+      - centralizes success-summary text, delivery/account body text, and display-name formatting for bot-facing purchase/history messages.
+    - Updated bot purchase/history flows:
+      - `handlers/shop.py`
+        - balance/instant-purchase success text now uses multi-line `Thanh toán thành công` summary with separate `Loại hàng` / `Số lượng` / `Tổng` lines.
+        - history detail now formats account content the same way as purchase delivery output instead of raw `<code>` dumps.
+      - `database/db.py` + `database/supabase_db.py`
+        - `get_order_detail(...)` now returns product `description` + `format_data` so history can render formatted account fields consistently.
+    - Updated SePay bot auto-fulfill messaging:
+      - `sepay_checker.py`
+        - relay text for Bot payments now includes `Tên người dùng` and explicit blank-line-separated sections.
+        - user success text now uses the same shared summary/body formatting as other bot delivery flows.
+    - Updated manual Bot direct-order fulfill messaging:
+      - `admin-dashboard/app/api/direct-orders/fulfill/route.ts`
+        - relay text now includes `Tên người dùng` plus blank-line-separated payment/product sections.
+        - user success text now uses separate `Loại hàng` / `Số lượng` / `Tổng` lines instead of compact single-line summary.
+      - `admin-dashboard/app/api/_shared/paymentRelay.ts`
+        - preserves intentional blank lines in relay message arrays instead of stripping them.
+    - Updated Bot Dashboard Users broadcast UX:
+      - `admin-dashboard/app/(admin)/users/page.tsx`
+        - added DB-backed `broadcast_title_presets` management UI on the Users page.
+        - selected preset title is prepended to broadcast body when sending to all users.
 - Now:
-  - Latest SePay logging refinement is implemented and validated.
+  - Latest Bot Dashboard broadcast-throughput request is implemented and locally validated.
+  - Broadcast route no longer uses coarse fixed batches; it now uses sustained rate-limited concurrency with shared cooldown handling for Telegram `429`.
+- Now:
+  - Latest bot success/history formatting and Users broadcast-preset request is implemented in code and locally validated.
+  - No SQL migration was needed for this request because broadcast title presets are stored in the existing `settings` table as JSON.
+- Now:
+  - Phase 2 mutation-path centralization is implemented in code and locally validated for:
+    - direct-order fulfill flows
+    - bot instant-purchase flows
+  - Phase 3 analytics hardening is implemented in code and locally validated for:
+    - Bot Dashboard overview snapshot
+    - Bot Reports snapshot
+    - Bot Users snapshot
+  - SQL consolidation task is completed in repo:
+    - fresh bootstrap schema snapshot is available for DB transfer / new environment setup
+  - Bootstrap rerun hardening is completed:
+    - combined bootstrap SQL now handles pre-existing policies more safely on rerun
+  - Bot dashboard refinement batch is completed in code and validated locally.
 - Next:
-  - If user requests, expose SePay polling limit controls in dashboard settings UI.
-  - Monitor runtime logging density after deployment.
+  - Apply `supabase_schema_direct_order_fulfillment.sql` and `supabase_schema_bot_balance_purchase_fulfillment.sql` in Supabase for deployed atomic paths.
+  - Apply `supabase_schema_bot_admin_analytics.sql` in Supabase so Dashboard / Reports / Users use DB-side snapshot functions in production.
+  - Apply `supabase_schema_bot_user_profile_names.sql` in Supabase so Telegram display names can persist into `users.first_name/last_name`.
+  - Optional next pass after this is reducing remaining enrichment duplication in Bot `Orders` page.
 
 Validation:
 - `npm -C admin-dashboard run build` passed after pricing/promo changes.
@@ -1034,8 +1530,47 @@ Validation:
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile sepay_checker.py` passed after relay message Vietnamese + product-name updates for auto-fulfill notifications.
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile sepay_checker.py` passed after SePay polling optimization (limit + last-seen checkpoint).
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile sepay_checker.py` passed after SePay transaction-log refinement (`TX id=...` for new tx even when debug is off).
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/shop.py` passed after checkout guard fix (reminder + payment-menu re-render when payment method not selected).
+- `./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json` passed after Popote reskin pass-2 cleanup.
+- `./admin-dashboard/node_modules/.bin/tsc --noEmit -p admin-dashboard/tsconfig.json` passed after storefront UI rewrite compatibility check.
+- `npm -C storefront-web run build` passed after Popote reskin pass-2.
+- `./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json` passed after FAQ/stats settings + signup verify + UI bugfix batch.
+- `./admin-dashboard/node_modules/.bin/tsc --noEmit -p admin-dashboard/tsconfig.json` passed after Website Settings FAQ CRUD/stats toggles update.
+- `npm -C storefront-web run build` passed after latest storefront fixes (FAQ/stats/tone/red-artifact/auth-verify).
+- `./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json` passed after FAQ-empty parser adjustment.
+- `./admin-dashboard/node_modules/.bin/tsc --noEmit -p admin-dashboard/tsconfig.json` passed after FAQ-empty parser adjustment.
+- `npm -C storefront-web run build` passed after FAQ-empty parser adjustment.
+- `./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json` passed after logo replacement + global sizing pass.
+- `./admin-dashboard/node_modules/.bin/tsc --noEmit -p admin-dashboard/tsconfig.json` passed after storefront sizing pass compatibility check.
+- `npm -C storefront-web run build` passed after logo replacement + global sizing pass (warning only: optional `sharp` not installed).
+- `./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json && npm -C storefront-web run build` passed after renaming storefront branding to `Destiny Store` and adding `app/icon.png` (warning only: optional `sharp` not installed).
+- `./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json && npm -C storefront-web run build` passed after hero visual tweak (brand-highlight color + remove outer hero border panel).
+- `./admin-dashboard/node_modules/.bin/tsc --noEmit -p admin-dashboard/tsconfig.json && ./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json && npm -C storefront-web run build` passed after Website Product banner-upload + storage URI resolver.
+- `./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json && npm -C storefront-web run build` passed after removing product-banner image dim overlay.
+- `./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json && npm -C storefront-web run build` passed after navbar icon refinement (`$` hidden + auth/cart SVG icons).
+- `./admin-dashboard/node_modules/.bin/tsc --noEmit -p admin-dashboard/tsconfig.json` passed after Website Product channel-split refactor (`website_sort_position`, `website_format_data`, `website_deleted` flows).
+- `./storefront-web/node_modules/.bin/tsc --noEmit -p storefront-web/tsconfig.json` passed after storefront Website-only product mapping/filter/sort refactor.
+- `npm -C storefront-web run build` passed after Website-only product mapping/filter/sort refactor.
+- `./admin-dashboard/node_modules/.bin/tsc --noEmit -p admin-dashboard/tsconfig.json` passed after Website Products legacy-compat fallback for hide/soft-delete actions.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after phase-1 finance route TypeScript fixes and server-side finance rewiring validation.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after phase-2 shared direct-order fulfillment helper + manual fulfill route rewiring.
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile sepay_checker.py database/db.py database/supabase_db.py handlers/shop.py` passed after phase-2 fulfillment wrapper integration.
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/shop.py database/db.py database/supabase_db.py sepay_checker.py` passed after phase-2 bot instant-purchase helper rewiring.
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/shop.py database/db.py database/supabase_db.py sepay_checker.py` passed after phase-2 bot instant-purchase RPC-first hardening.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after phase-3 admin analytics snapshot routes/helpers/page rewiring.
+- `wc -l supabase_schema_all_in_one.sql` returned `2194` and `rg -n "BEGIN:|END:" supabase_schema_all_in_one.sql` confirmed all 9 expected SQL sections after bootstrap-file consolidation.
+- `rg -n "drop policy if exists|create policy" supabase_schema_all_in_one.sql` confirmed every bootstrap-defined RLS policy in the combined file is now preceded by `DROP POLICY IF EXISTS` after duplicate-policy error hardening.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Bot Dashboard refinement batch (`Dashboard` display-name column, `Stock` product tabs, `Orders` pagination, `Users` full fetch + pagination, `Reports` period filters).
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/start.py handlers/shop.py handlers/chat_logger.py database/db.py database/supabase_db.py` passed after adding Telegram profile-name persistence support.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Users broadcast batching + Reports custom-month comparison implementation.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Reports month-picker UI + `all_time` + absolute money delta refinement.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Reports picker overlap hotfix (`z-index` / stacking-context CSS fix).
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/shop.py handlers/start.py sepay_checker.py database/db.py database/supabase_db.py helpers/purchase_messages.py` passed after bot success/history formatting + relay-text refinement.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Users broadcast title presets + manual bot fulfill text refinements.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after replacing broadcast fixed-batch loop with paced worker-pool rate limiting.
 
 Open Questions:
+- No blocking questions for the current analysis request.
 - Should both features apply to all order flows (bot direct purchase, admin-created orders, any API order endpoint) or only end-user bot checkout? **UNCONFIRMED**
 - Can each product have multiple buy-x-get-y rules at once, or only one active rule? (currently assuming one active rule/product). **UNCONFIRMED**
 - If quantity does not match any explicit tier above base, should fallback use product base price? (currently assuming yes). **UNCONFIRMED**
@@ -1046,6 +1581,10 @@ Open Questions:
 - For long-term clean split in shared `direct_orders`, should we add explicit `source` column (`bot`/`website`) via new SQL migration and use it in both dashboards? **UNCONFIRMED**
 - For the new Reports redesign, which KPIs/charts are highest priority for operations (e.g., conversion, AOV, failure rate, by-product ranking)? **UNCONFIRMED**
 - Preferred index base for `Vị trí` UI (start at 0 or 1) is not explicitly specified; current implementation assumption will use free integer input. **UNCONFIRMED**
+- For Reports month comparison UI, current implementation defaults compare-month to the immediately previous month when user has not chosen a second month; user preference for that default is still **UNCONFIRMED**.
+- `Từ trước đến nay` currently suppresses comparison text instead of showing a neutral `0`; user preference for that behavior is still **UNCONFIRMED**.
+- Broadcast title presets should persist in Dashboard admin UX; storage location (browser local storage vs DB settings) is not explicitly specified, so DB-backed settings are preferred when implementation stays lightweight. **ASSUMED**
+- For the new bot success text examples, the exact desired icon on the `Số lượng` line is not explicitly specified; use a package-style icon consistently across success/history text unless the user later specifies a different one. **UNCONFIRMED**
 
 Notes:
 - `npm -C admin-dashboard run lint` prompts for initial ESLint setup (interactive), so it was not run.
