@@ -437,6 +437,15 @@ async def add_product(
     sort_position: int = None,
 ):
     async with aiosqlite.connect(DB_PATH) as db:
+        if sort_position is not None:
+            await db.execute(
+                """
+                UPDATE products
+                SET sort_position = sort_position + 1
+                WHERE sort_position IS NOT NULL AND sort_position >= ?
+                """,
+                (int(sort_position),),
+            )
         cursor = await db.execute(
             """
             INSERT INTO products

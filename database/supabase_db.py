@@ -597,6 +597,30 @@ async def add_product(
     promo_bonus_quantity: int = 0,
     sort_position: Optional[int] = None,
 ):
+    shifted_rows: list[tuple[int, int]] = []
+
+    if sort_position is not None:
+        def _load_rows_to_shift():
+            return _get_table("products").select("id, sort_position").gte(
+                "sort_position", sort_position
+            ).order("sort_position", desc=True).order("id", desc=True).execute()
+
+        try:
+            shift_resp = await _to_thread(_load_rows_to_shift)
+            shifted_rows = [
+                (int(row.get("id")), int(row.get("sort_position")))
+                for row in (shift_resp.data or [])
+                if row.get("sort_position") is not None
+            ]
+            for product_id, current_position in shifted_rows:
+                def _shift_one(pid=product_id, next_position=current_position + 1):
+                    return _get_table("products").update({"sort_position": next_position}).eq("id", pid).execute()
+
+                await _to_thread(_shift_one)
+        except Exception:
+            shifted_rows = []
+            raise
+
     def _insert():
         payload = {
             "name": name,
@@ -621,7 +645,16 @@ async def add_product(
             }
             return _get_table("products").insert(legacy_payload).execute()
 
-    resp = await _to_thread(_insert)
+    try:
+        resp = await _to_thread(_insert)
+    except Exception:
+        if shifted_rows:
+            for product_id, original_position in shifted_rows:
+                def _restore_one(pid=product_id, position=original_position):
+                    return _get_table("products").update({"sort_position": position}).eq("id", pid).execute()
+
+                await _to_thread(_restore_one)
+        raise
     data = resp.data or []
     return data[0].get("id") if data else None
 

@@ -187,6 +187,18 @@ Goal: Improve Admin Dashboard and sales operations, including dynamic pricing/pr
 - Current scope add-on (latest request): maximize Bot Dashboard broadcast throughput:
   - Users page broadcast is still perceived as too slow.
   - Need to optimize `/api/telegram/send` for the fastest practical all-user dispatch, not just the previous simple batch-delay approach.
+- Current scope add-on (latest request): Bot broadcast failure triage after speedup:
+  - Broadcast is now fast enough, but some recipients still fail.
+  - User suspects failures correlate with accounts missing `username`; need to verify the true cause and tighten recipient selection / failure handling accordingly.
+- Current scope add-on (latest request): Bot Products + Users UI refinement:
+  - Products page: when adding a new product into an occupied `Vị trí`, shift the existing product(s) down so ordering remains contiguous instead of colliding on the same position.
+  - Users page: redesign the broadcast `Title` preset section to be as compact/gọn as possible.
+- Current scope add-on (latest request): Users broadcast modal refinement:
+  - Main broadcast area should only show a simple title dropdown.
+  - Title CRUD must move behind a dedicated modal.
+  - `Gửi tất cả` should use a real confirm modal instead of browser `confirm()`.
+- Current scope add-on (latest request): full Dashboard mobile responsiveness:
+  - Make the admin dashboards usable on mobile across all tabs by improving shared shell/nav behavior and global layout responsiveness for forms, cards, tables, and modal-heavy pages.
 
 Success Criteria:
 - Existing completed behaviors remain working:
@@ -417,6 +429,21 @@ Key Decisions:
 - Latest broadcast-throughput decision:
   - Replace the fixed batch + sleep loop in `admin-dashboard/app/api/telegram/send/route.ts` with a paced worker-pool / rate-limiter design so outbound sends can stay close to Telegram-safe throughput continuously instead of idling between coarse batches.
   - Keep retry-after handling for `429` and prefer sustained throughput over simplistic single-loop batching. **ASSUMED**
+- Latest broadcast-failure triage decision:
+  - Do not assume missing `username` is itself a Telegram send blocker; sending uses numeric `chat_id`.
+  - Verify whether failing recipients are actually non-bot / shadow / unreachable chat IDs, and prefer filtering the broadcast target source to contacts that have real Telegram chat history with the bot. **ASSUMED**
+- Latest broadcast-recipient hardening decision:
+  - Align the Bot Dashboard broadcast route with its UI wording (`user đã nhắn bot`) by preferring recipients that have actual Telegram private-chat history and skipping bare/anonymous records that only exist in `users`.
+  - Keep `broadcast_invalid_chat_ids` blacklist behavior for permanently unreachable chats so repeated broadcasts do not keep retrying the same failures. **ASSUMED**
+- Latest product-position insertion decision:
+  - Treat `sort_position` as an ordered slot, so inserting a new product at an occupied position should shift existing products at that position and after it by `+1` rather than leaving duplicates. **ASSUMED**
+- Latest Users broadcast-title UX decision:
+  - Keep title presets DB-backed, but collapse the editing controls into a denser layout that prioritizes quick select/use over large form blocks. **ASSUMED**
+- Latest Users broadcast-modal UX decision:
+  - Make the main broadcast composer minimal: dropdown for preset selection + explicit button to open title-manager modal.
+  - Reuse the dashboard modal style for both title CRUD and all-user broadcast confirmation. **ASSUMED**
+- Latest dashboard mobile-responsiveness decision:
+  - Prioritize shared-shell and global CSS improvements first so both Bot and Website dashboard tabs inherit the same mobile behavior without per-page rewrites wherever possible. **ASSUMED**
 
 Progress State:
 - Done:
@@ -1338,6 +1365,45 @@ Progress State:
       - dedupes and normalizes user IDs before dispatch.
     - `admin-dashboard/app/(admin)/users/page.tsx`:
       - broadcast status now shows both sent and failed counts.
+  - Completed broadcast failure triage + recipient hardening:
+    - `admin-dashboard/app/api/telegram/send/route.ts`:
+      - broadcast candidate loading now reads `user_id + profile fields` instead of blindly using all `users.user_id`.
+      - added inbound-chat scan from `telegram_messages` and only broadcasts to users who either:
+        - have real inbound private-chat history with the bot, or
+        - still have Telegram profile signals (`username` / `first_name` / `last_name`) in `users`.
+      - keeps excluding website sentinel IDs and cached `broadcast_invalid_chat_ids`.
+    - `admin-dashboard/app/(admin)/users/page.tsx`:
+      - broadcast status copy now reports `attempted`, `skipped`, and `blacklisted` counts instead of only `sent/failed`.
+  - Completed latest Products + Users refinement:
+    - `admin-dashboard/app/(admin)/products/page.tsx`:
+      - adding a new product at an occupied `sort_position` now shifts existing products at/after that position down by `+1` before insert.
+      - keeps a simple rollback path if the final product insert fails after shifting.
+    - `database/db.py` + `database/supabase_db.py`:
+      - `add_product(...)` now follows the same ordered-insert semantics for non-dashboard callers.
+    - `admin-dashboard/app/(admin)/users/page.tsx`:
+      - broadcast title preset UI was compressed into a compact toolbar (`select + draft + actions`) instead of the previous tall full-width block.
+    - `admin-dashboard/app/globals.css`:
+      - added compact broadcast-title layout styles and button disabled-state polish.
+  - Completed latest Users broadcast modal refinement:
+    - `admin-dashboard/app/(admin)/users/page.tsx`:
+      - main broadcast area now shows only a simple title dropdown plus button to open title-manager modal.
+      - moved title preset CRUD into a dedicated modal.
+      - replaced browser `confirm()` with a dashboard confirm modal for `Gửi tất cả`, including outgoing-message preview.
+    - `admin-dashboard/app/globals.css`:
+      - added compact toolbar and confirm-preview styling for the modal-based flow.
+  - Completed dashboard mobile-responsive pass:
+    - `admin-dashboard/components/AppShell.tsx` + `admin-dashboard/components/WebsiteShell.tsx`:
+      - added mobile menu toggle with collapsible sidebar body for both Bot and Website dashboards.
+      - mobile menu auto-closes on route change.
+    - `admin-dashboard/app/globals.css`:
+      - strengthened mobile breakpoints for:
+        - shell/sidebar/main spacing
+        - topbar stacking
+        - cards and stats grids
+        - forms, segmented controls, pricing rows, broadcast toolbar
+        - tables via horizontal overflow behavior
+        - modal sizing/actions
+        - chat panel heights
   - Completed latest Reports month-selection + month-compare refinement:
     - `admin-dashboard/app/api/_shared/adminAnalytics.ts`:
       - extended reports snapshot model to support `custom_month` plus explicit `month` / `compareMonth`.
@@ -1397,6 +1463,33 @@ Progress State:
 - Now:
   - Latest Bot Dashboard broadcast-throughput request is implemented and locally validated.
   - Broadcast route no longer uses coarse fixed batches; it now uses sustained rate-limited concurrency with shared cooldown handling for Telegram `429`.
+- Now:
+  - New follow-up is to reduce remaining broadcast failures by validating recipient-source assumptions after the speedup.
+  - Next step is to inspect how broadcast targets are selected and whether website/shadow/non-chat users are leaking into the Bot broadcast target set.
+- Now:
+  - Investigation confirms the current broadcast route still sources candidates from `users`, which is broader than the UI promise (`đã nhắn bot`) and can include non-chat / stale recipients.
+  - Next step is to tighten recipient eligibility in the route and surface clearer `attempted/skipped/blacklisted` counts in the Users page status.
+- Now:
+  - Broadcast recipient hardening is implemented and locally validated.
+  - Next step outside code is to re-run a real broadcast and confirm the skipped/blacklisted counts drop repeated failures on subsequent runs.
+- Now:
+  - New follow-up is to implement ordered insertion for Product `Vị trí` and compress the Users broadcast-title UI.
+  - Next step is to inspect the current add-product persistence path and the broadcast preset section structure before patching.
+- Now:
+  - Ordered Product insertion and compact broadcast-title UI are implemented and locally validated.
+  - Next step outside code is visual confirmation in the dashboard that the tighter Title layout feels right at your usual screen width.
+- Now:
+  - New follow-up is to simplify the broadcast composer further by moving Title CRUD and send-confirmation into dedicated modals.
+  - Next step is to patch `Users` page state/markup and reuse the existing modal CSS pattern.
+- Now:
+  - Users broadcast modal refinement is implemented and locally validated.
+  - Next step outside code is visual confirmation that the simpler dropdown + modal flow matches your preferred UX.
+- Now:
+  - New follow-up is a global mobile-responsive pass for all dashboard tabs.
+  - Next step is to patch the shared dashboard shells and global CSS so cards/forms/tables/navigation adapt cleanly on small screens.
+- Now:
+  - Dashboard mobile-responsive pass is implemented and locally validated by TypeScript.
+  - Next step outside code is visual QA on a real phone viewport to catch any tab-specific overflow that may still need a targeted tweak.
 - Now:
   - Latest bot success/history formatting and Users broadcast-preset request is implemented in code and locally validated.
   - No SQL migration was needed for this request because broadcast title presets are stored in the existing `settings` table as JSON.
@@ -1568,6 +1661,11 @@ Validation:
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/shop.py handlers/start.py sepay_checker.py database/db.py database/supabase_db.py helpers/purchase_messages.py` passed after bot success/history formatting + relay-text refinement.
 - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Users broadcast title presets + manual bot fulfill text refinements.
 - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after replacing broadcast fixed-batch loop with paced worker-pool rate limiting.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after broadcast recipient hardening (`telegram_messages` chat-history preference + improved Users status copy).
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Product ordered-insert logic + compact Users broadcast-title UI.
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile database/db.py database/supabase_db.py` passed after aligning `add_product(...)` ordered-insert semantics in both DB layers.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after moving Users broadcast title CRUD + send confirmation into dashboard modals.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after global dashboard mobile-responsive shell/CSS pass.
 
 Open Questions:
 - No blocking questions for the current analysis request.
