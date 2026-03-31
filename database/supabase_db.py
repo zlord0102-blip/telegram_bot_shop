@@ -1,7 +1,7 @@
 import asyncio
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from .supabase_client import get_supabase_client
@@ -51,6 +51,12 @@ def _safe_list(value: Any) -> List[Any]:
 
 
 class DirectOrderFulfillmentError(RuntimeError):
+    def __init__(self, code: str, message: Optional[str] = None):
+        super().__init__(message or code)
+        self.code = code
+
+
+class BinanceDirectOrderError(RuntimeError):
     def __init__(self, code: str, message: Optional[str] = None):
         super().__init__(message or code)
         self.code = code
@@ -114,6 +120,15 @@ def _map_fulfillment_error_from_message(message: str, expire_minutes: int) -> Di
     return DirectOrderFulfillmentError("fulfillment_failed", str(message or "fulfillment_failed"))
 
 
+def _map_binance_order_error_from_message(message: str) -> BinanceDirectOrderError:
+    lowered = str(message or "").lower()
+    if "duplicate key value" in lowered or "duplicate_binance_amount" in lowered or "direct_orders_pending_binance_amount_idx" in lowered:
+        return BinanceDirectOrderError("duplicate_binance_amount")
+    if "forbidden" in lowered:
+        return BinanceDirectOrderError("forbidden", "forbidden")
+    return BinanceDirectOrderError("binance_direct_order_failed", str(message or "binance_direct_order_failed"))
+
+
 def _safe_str_list(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(item or "") for item in value]
@@ -125,6 +140,24 @@ def _safe_str_list(value: Any) -> List[str]:
         except Exception:
             pass
     return []
+
+
+def _safe_json_object(value: Any) -> Dict[str, Any]:
+    if isinstance(value, dict):
+        return dict(value)
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            if isinstance(parsed, dict):
+                return parsed
+        except Exception:
+            pass
+    return {}
+
+
+def _is_missing_relation_error_message(message: str) -> bool:
+    lowered = str(message or "").lower()
+    return "does not exist" in lowered or "relation" in lowered or "schema cache" in lowered
 
 
 def _normalize_balance_purchase_payload(data: Any) -> Dict[str, Any]:
@@ -1186,8 +1219,8 @@ async def get_pending_direct_orders():
     def _fetch():
         try:
             return _get_table("direct_orders").select(
-                "id, user_id, product_id, quantity, bonus_quantity, unit_price, amount, code, created_at"
-            ).eq("status", "pending").execute()
+                "id, user_id, product_id, quantity, bonus_quantity, unit_price, amount, code, created_at, payment_channel"
+            ).eq("status", "pending").neq("payment_channel", "binance_onchain").execute()
         except Exception:
             return _get_table("direct_orders").select(
                 "id, user_id, product_id, quantity, unit_price, amount, code, created_at"
@@ -1216,6 +1249,283 @@ async def set_direct_order_status(order_id: int, status: str):
         return _get_table("direct_orders").update({"status": status}).eq("id", order_id).execute()
 
     await _to_thread(_update)
+
+
+def _normalize_bot_delivery_outbox_row(row: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
+    return {
+        "id": _safe_int(row.get("id")),
+        "direct_order_id": _safe_int(row.get("direct_order_id")),
+        "user_id": _safe_int(row.get("user_id")),
+        "channel": str(row.get("channel") or "telegram_bot"),
+        "payload": _safe_json_object(row.get("payload")),
+        "status": str(row.get("status") or "pending"),
+        "attempt_count": _safe_int(row.get("attempt_count")),
+        "next_retry_at": row.get("next_retry_at"),
+        "last_error": row.get("last_error"),
+        "sent_at": row.get("sent_at"),
+        "last_attempt_at": row.get("last_attempt_at"),
+        "created_at": row.get("created_at"),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+async def get_bot_delivery_outbox(direct_order_id: int) -> Optional[Dict[str, Any]]:
+    def _fetch():
+        return _get_table("bot_delivery_outbox").select("*").eq("direct_order_id", direct_order_id).limit(1).execute()
+
+    try:
+        resp = await _to_thread(_fetch)
+    except Exception as exc:
+        if _is_missing_relation_error_message(str(exc)) and "bot_delivery_outbox" in str(exc):
+            return None
+        raise
+
+    rows = resp.data or []
+    return _normalize_bot_delivery_outbox_row(dict(rows[0])) if rows else None
+
+
+async def ensure_bot_delivery_outbox(
+    direct_order_id: int,
+    user_id: int,
+    payload: Dict[str, Any],
+    reset_status: bool = False,
+) -> Optional[Dict[str, Any]]:
+    existing = await get_bot_delivery_outbox(direct_order_id)
+    now_iso = _now_iso()
+
+    if existing:
+        def _update():
+            update_payload: Dict[str, Any] = {
+                "user_id": user_id,
+                "payload": payload,
+                "channel": "telegram_bot",
+            }
+            if reset_status:
+                update_payload.update(
+                    {
+                        "status": "pending",
+                        "last_error": None,
+                        "next_retry_at": now_iso,
+                        "sent_at": None,
+                        "last_attempt_at": None,
+                    }
+                )
+            return _get_table("bot_delivery_outbox").update(update_payload).eq("id", existing["id"]).execute()
+
+        try:
+            await _to_thread(_update)
+        except Exception as exc:
+            if _is_missing_relation_error_message(str(exc)) and "bot_delivery_outbox" in str(exc):
+                return None
+            raise
+        return await get_bot_delivery_outbox(direct_order_id)
+
+    def _insert():
+        return _get_table("bot_delivery_outbox").insert(
+            {
+                "direct_order_id": direct_order_id,
+                "user_id": user_id,
+                "channel": "telegram_bot",
+                "payload": payload,
+                "status": "pending",
+                "attempt_count": 0,
+                "next_retry_at": now_iso,
+                "last_error": None,
+                "sent_at": None,
+                "last_attempt_at": None,
+            }
+        ).execute()
+
+    try:
+        await _to_thread(_insert)
+    except Exception as exc:
+        if _is_missing_relation_error_message(str(exc)) and "bot_delivery_outbox" in str(exc):
+            return None
+        raise
+    return await get_bot_delivery_outbox(direct_order_id)
+
+
+async def get_due_bot_delivery_outbox(limit: int = 20) -> List[Dict[str, Any]]:
+    def _fetch():
+        return _get_table("bot_delivery_outbox").select("*").eq("status", "pending").lte("next_retry_at", _now_iso()).order("next_retry_at").limit(max(1, int(limit or 20))).execute()
+
+    try:
+        resp = await _to_thread(_fetch)
+    except Exception as exc:
+        if _is_missing_relation_error_message(str(exc)) and "bot_delivery_outbox" in str(exc):
+            return []
+        raise
+
+    rows = resp.data or []
+    return [normalized for normalized in (_normalize_bot_delivery_outbox_row(dict(row)) for row in rows) if normalized]
+
+
+async def mark_bot_delivery_outbox_sending(outbox_id: int, attempt_count: int):
+    def _update():
+        return _get_table("bot_delivery_outbox").update(
+            {
+                "status": "sending",
+                "attempt_count": int(attempt_count),
+                "last_attempt_at": _now_iso(),
+            }
+        ).eq("id", outbox_id).execute()
+
+    await _to_thread(_update)
+
+
+async def mark_bot_delivery_outbox_sent(outbox_id: int, attempt_count: int):
+    def _update():
+        return _get_table("bot_delivery_outbox").update(
+            {
+                "status": "sent",
+                "attempt_count": int(attempt_count),
+                "last_error": None,
+                "next_retry_at": None,
+                "sent_at": _now_iso(),
+            }
+        ).eq("id", outbox_id).execute()
+
+    await _to_thread(_update)
+
+
+async def schedule_bot_delivery_outbox_retry(
+    outbox_id: int,
+    attempt_count: int,
+    last_error: str,
+    next_retry_at: Optional[str],
+):
+    def _update():
+        return _get_table("bot_delivery_outbox").update(
+            {
+                "status": "pending",
+                "attempt_count": int(attempt_count),
+                "last_error": str(last_error or "")[:2000],
+                "next_retry_at": next_retry_at,
+            }
+        ).eq("id", outbox_id).execute()
+
+    await _to_thread(_update)
+
+
+async def mark_bot_delivery_outbox_failed(outbox_id: int, attempt_count: int, last_error: str):
+    def _update():
+        return _get_table("bot_delivery_outbox").update(
+            {
+                "status": "failed",
+                "attempt_count": int(attempt_count),
+                "last_error": str(last_error or "")[:2000],
+                "next_retry_at": None,
+            }
+        ).eq("id", outbox_id).execute()
+
+    await _to_thread(_update)
+
+
+async def get_recent_confirmed_direct_orders_missing_delivery(limit: int = 50, hours: int = 48) -> List[Dict[str, Any]]:
+    cutoff_iso = (datetime.now() - timedelta(hours=max(1, int(hours or 48)))).isoformat()
+
+    def _fetch_orders():
+        return _get_table("direct_orders").select(
+            "id, user_id, product_id, quantity, bonus_quantity, amount, code, created_at, status"
+        ).eq("status", "confirmed").gte("created_at", cutoff_iso).order("created_at", desc=True).limit(max(1, int(limit or 50))).execute()
+
+    resp = await _to_thread(_fetch_orders)
+    rows = [dict(row) for row in (resp.data or [])]
+    if not rows:
+        return []
+
+    outbox_by_order_id: Dict[int, Dict[str, Any]] = {}
+    direct_order_ids = [row.get("id") for row in rows if row.get("id") is not None]
+    if direct_order_ids:
+        def _fetch_outbox():
+            return _get_table("bot_delivery_outbox").select("direct_order_id").in_("direct_order_id", direct_order_ids).execute()
+
+        try:
+            outbox_resp = await _to_thread(_fetch_outbox)
+            outbox_by_order_id = {
+                _safe_int(item.get("direct_order_id")): dict(item) for item in (outbox_resp.data or [])
+            }
+        except Exception as exc:
+            if _is_missing_relation_error_message(str(exc)) and "bot_delivery_outbox" in str(exc):
+                return rows
+            raise
+
+    return [row for row in rows if _safe_int(row.get("id")) not in outbox_by_order_id]
+
+
+async def build_bot_delivery_payload_for_direct_order(direct_order_id: int) -> Optional[Dict[str, Any]]:
+    def _fetch_direct_order():
+        return _get_table("direct_orders").select(
+            "id, user_id, product_id, quantity, bonus_quantity, amount, code, created_at, status"
+        ).eq("id", direct_order_id).limit(1).execute()
+
+    direct_resp = await _to_thread(_fetch_direct_order)
+    direct_rows = direct_resp.data or []
+    if not direct_rows:
+        return None
+
+    direct_order = dict(direct_rows[0])
+    if str(direct_order.get("status") or "") != "confirmed":
+        return None
+
+    product = await _get_direct_product_delivery_details(_safe_int(direct_order.get("product_id")))
+    expected_delivered_quantity = max(1, _safe_int(direct_order.get("quantity"), 1)) + max(0, _safe_int(direct_order.get("bonus_quantity"), 0))
+
+    def _fetch_orders():
+        return _get_table("orders").select(
+            "id, content, price, quantity, order_group, created_at"
+        ).eq("user_id", direct_order.get("user_id")).eq("product_id", direct_order.get("product_id")).gte("created_at", direct_order.get("created_at")).order("created_at").limit(20).execute()
+
+    order_resp = await _to_thread(_fetch_orders)
+    order_rows = [dict(row) for row in (order_resp.data or [])]
+    if not order_rows:
+        return None
+
+    selected_row: Optional[Dict[str, Any]] = None
+    selected_items: List[str] = []
+    for row in order_rows:
+        items = _safe_str_list(row.get("content"))
+        delivered_quantity = max(len(items), _safe_int(row.get("quantity")))
+        if delivered_quantity == expected_delivered_quantity and _safe_int(row.get("price")) == _safe_int(direct_order.get("amount")):
+            selected_row = row
+            selected_items = items
+            break
+    if selected_row is None:
+        for row in order_rows:
+            items = _safe_str_list(row.get("content"))
+            if len(items) == expected_delivered_quantity:
+                selected_row = row
+                selected_items = items
+                break
+    if selected_row is None:
+        for row in order_rows:
+            items = _safe_str_list(row.get("content"))
+            if items:
+                selected_row = row
+                selected_items = items
+                break
+    if selected_row is None or not selected_items:
+        return None
+
+    product_id = _safe_int(direct_order.get("product_id"))
+    return {
+        "directOrderId": _safe_int(direct_order.get("id")),
+        "orderId": _safe_optional_int(selected_row.get("id")),
+        "userId": _safe_int(direct_order.get("user_id")),
+        "productId": product_id,
+        "productName": str(product.get("name") or f"#{product_id}"),
+        "description": str(product.get("description") or ""),
+        "formatData": str(product.get("format_data") or ""),
+        "quantity": max(1, _safe_int(direct_order.get("quantity"), 1)),
+        "bonusQuantity": max(0, _safe_int(direct_order.get("bonus_quantity"), 0)),
+        "deliveredQuantity": max(1, len(selected_items) or expected_delivered_quantity),
+        "amount": max(0, _safe_int(direct_order.get("amount"))),
+        "code": str(direct_order.get("code") or ""),
+        "orderGroup": str(selected_row.get("order_group") or ""),
+        "items": [str(item or "") for item in selected_items],
+    }
 
 
 async def get_pending_website_direct_orders():
@@ -1794,122 +2104,187 @@ async def get_bank_settings():
     }
 
 
-# Binance deposit functions
-async def create_binance_deposit(user_id: int, usdt_amount: float, vnd_amount: int, code: str):
+# Binance on-chain direct-order helpers
+async def create_binance_direct_order(
+    user_id: int,
+    product_id: int,
+    quantity: int,
+    unit_price: int,
+    amount: int,
+    code: str,
+    *,
+    bonus_quantity: int = 0,
+    payment_asset: str,
+    payment_network: str,
+    payment_amount_asset: str,
+    payment_rate_vnd: str,
+    payment_address: str,
+    payment_address_tag: str = "",
+):
+    def _rpc():
+        return get_supabase_client().rpc(
+            "create_binance_direct_order",
+            {
+                "p_user_id": user_id,
+                "p_product_id": product_id,
+                "p_quantity": quantity,
+                "p_bonus_quantity": bonus_quantity,
+                "p_unit_price": unit_price,
+                "p_amount": amount,
+                "p_code": code,
+                "p_payment_asset": payment_asset,
+                "p_payment_network": payment_network,
+                "p_payment_amount_asset": payment_amount_asset,
+                "p_payment_rate_vnd": payment_rate_vnd,
+                "p_payment_address": payment_address,
+                "p_payment_address_tag": payment_address_tag,
+            },
+        ).execute()
+
+    try:
+        resp = await _to_thread(_rpc)
+        data = resp.data or []
+        row = data[0] if isinstance(data, list) and data else data
+        if row:
+            return {
+                "direct_order_id": _safe_int(row.get("direct_order_id")),
+                "code": row.get("code") or code,
+                "payment_asset": row.get("payment_asset") or payment_asset,
+                "payment_network": row.get("payment_network") or payment_network,
+                "payment_amount_asset": row.get("payment_amount_asset") or payment_amount_asset,
+                "payment_address": row.get("payment_address") or payment_address,
+                "payment_address_tag": row.get("payment_address_tag") or payment_address_tag,
+                "created_at": row.get("created_at") or _now_iso(),
+            }
+    except Exception as exc:
+        if not _is_missing_rpc_error_message(str(exc or "")):
+            raise _map_binance_order_error_from_message(str(exc))
+
     def _insert():
-        return _get_table("binance_deposits").insert({
-            "user_id": user_id,
-            "usdt_amount": usdt_amount,
-            "vnd_amount": vnd_amount,
-            "code": code,
-            "created_at": _now_iso(),
-        }).execute()
+        return _get_table("direct_orders").insert(
+            {
+                "user_id": user_id,
+                "product_id": product_id,
+                "quantity": quantity,
+                "bonus_quantity": bonus_quantity,
+                "unit_price": unit_price,
+                "amount": amount,
+                "code": code,
+                "payment_channel": "binance_onchain",
+                "payment_asset": payment_asset,
+                "payment_network": payment_network,
+                "payment_amount_asset": payment_amount_asset,
+                "payment_rate_vnd": payment_rate_vnd,
+                "payment_address": payment_address,
+                "payment_address_tag": payment_address_tag or None,
+                "created_at": _now_iso(),
+            }
+        ).execute()
 
-    await _to_thread(_insert)
+    try:
+        resp = await _to_thread(_insert)
+    except Exception as exc:
+        raise _map_binance_order_error_from_message(str(exc))
+
+    rows = resp.data or []
+    row = rows[0] if rows else {}
+    return {
+        "direct_order_id": _safe_int(row.get("id")),
+        "code": row.get("code") or code,
+        "payment_asset": row.get("payment_asset") or payment_asset,
+        "payment_network": row.get("payment_network") or payment_network,
+        "payment_amount_asset": row.get("payment_amount_asset") or payment_amount_asset,
+        "payment_address": row.get("payment_address") or payment_address,
+        "payment_address_tag": row.get("payment_address_tag") or payment_address_tag,
+        "created_at": row.get("created_at") or _now_iso(),
+    }
 
 
-async def update_binance_deposit_screenshot(user_id: int, code: str, file_id: str):
-    def _update():
-        return _get_table("binance_deposits").update(
-            {"screenshot_file_id": file_id}
-        ).eq("user_id", user_id).eq("code", code).eq("status", "pending").execute()
-
-    await _to_thread(_update)
-
-
-async def get_pending_binance_deposits():
+async def get_pending_binance_direct_orders():
     def _fetch():
-        return _get_table("binance_deposits").select(
-            "id, user_id, usdt_amount, vnd_amount, code, screenshot_file_id, created_at"
-        ).eq("status", "pending").not_.is_("screenshot_file_id", "null").execute()
+        return _get_table("direct_orders").select(
+            "id, user_id, product_id, quantity, bonus_quantity, unit_price, amount, code, created_at, payment_asset, payment_network, payment_amount_asset, payment_rate_vnd, payment_address, payment_address_tag, external_payment_id, external_tx_id, external_paid_at"
+        ).eq("status", "pending").eq("payment_channel", "binance_onchain").order("created_at").execute()
 
     resp = await _to_thread(_fetch)
     rows = resp.data or []
     return [
-        (
-            row.get("id"),
-            row.get("user_id"),
-            _safe_float(row.get("usdt_amount")),
-            _safe_int(row.get("vnd_amount")),
-            row.get("code"),
-            row.get("screenshot_file_id"),
-            row.get("created_at"),
-        )
+        {
+            "id": row.get("id"),
+            "user_id": row.get("user_id"),
+            "product_id": row.get("product_id"),
+            "quantity": _safe_int(row.get("quantity"), 1),
+            "bonus_quantity": _safe_int(row.get("bonus_quantity"), 0),
+            "unit_price": _safe_int(row.get("unit_price")),
+            "amount": _safe_int(row.get("amount")),
+            "code": row.get("code") or "",
+            "created_at": row.get("created_at"),
+            "payment_asset": row.get("payment_asset") or "",
+            "payment_network": row.get("payment_network") or "",
+            "payment_amount_asset": row.get("payment_amount_asset"),
+            "payment_rate_vnd": row.get("payment_rate_vnd"),
+            "payment_address": row.get("payment_address") or "",
+            "payment_address_tag": row.get("payment_address_tag") or "",
+            "external_payment_id": row.get("external_payment_id") or "",
+            "external_tx_id": row.get("external_tx_id") or "",
+            "external_paid_at": row.get("external_paid_at"),
+        }
         for row in rows
     ]
 
 
-async def get_binance_deposit_detail(deposit_id: int):
-    def _fetch():
-        return _get_table("binance_deposits").select(
-            "id, user_id, usdt_amount, vnd_amount, code, screenshot_file_id, status, created_at"
-        ).eq("id", deposit_id).limit(1).execute()
-
-    resp = await _to_thread(_fetch)
-    data = resp.data or []
-    if not data:
-        return None
-    row = data[0]
-    return (
-        row.get("id"),
-        row.get("user_id"),
-        _safe_float(row.get("usdt_amount")),
-        _safe_int(row.get("vnd_amount")),
-        row.get("code"),
-        row.get("screenshot_file_id"),
-        row.get("status"),
-        row.get("created_at"),
-    )
-
-
-async def confirm_binance_deposit(deposit_id: int):
-    def _fetch():
-        return _get_table("binance_deposits").select("user_id, usdt_amount").eq(
-            "id", deposit_id
-        ).limit(1).execute()
-
-    resp = await _to_thread(_fetch)
-    data = resp.data or []
-    if not data:
-        return None
-    row = data[0]
-    user_id = row.get("user_id")
-    usdt_amount = _safe_float(row.get("usdt_amount"))
-
-    def _update_deposit():
-        return _get_table("binance_deposits").update({"status": "confirmed"}).eq(
-            "id", deposit_id
-        ).execute()
-
-    await _to_thread(_update_deposit)
-    await update_balance_usdt(user_id, usdt_amount)
-    return (user_id, usdt_amount)
-
-
-async def cancel_binance_deposit(deposit_id: int):
+async def record_direct_order_external_payment(
+    order_id: int,
+    *,
+    payment_id: str,
+    tx_id: str,
+    paid_at: str | None,
+):
     def _update():
-        return _get_table("binance_deposits").update({"status": "cancelled"}).eq("id", deposit_id).execute()
+        return _get_table("direct_orders").update(
+            {
+                "external_payment_id": payment_id,
+                "external_tx_id": tx_id,
+                "external_paid_at": paid_at,
+            }
+        ).eq("id", order_id).execute()
 
     await _to_thread(_update)
 
 
-async def get_user_pending_binance_deposit(user_id: int):
+async def is_processed_binance_deposit(payment_id: str):
     def _fetch():
-        return _get_table("binance_deposits").select(
-            "id, usdt_amount, vnd_amount, code"
-        ).eq("user_id", user_id).eq("status", "pending").order("id", desc=True).limit(1).execute()
+        return _get_table("binance_processed_deposits").select("payment_id").eq(
+            "payment_id", str(payment_id or "").strip()
+        ).limit(1).execute()
 
     resp = await _to_thread(_fetch)
-    data = resp.data or []
-    if not data:
-        return None
-    row = data[0]
-    return (
-        row.get("id"),
-        _safe_float(row.get("usdt_amount")),
-        _safe_int(row.get("vnd_amount")),
-        row.get("code"),
-    )
+    return bool(resp.data)
+
+
+async def mark_processed_binance_deposit(
+    payment_id: str,
+    *,
+    tx_id: str,
+    direct_order_id: int | None,
+    amount_asset: str,
+    payment_asset: str,
+    payment_network: str,
+):
+    def _upsert():
+        return _get_table("binance_processed_deposits").upsert(
+            {
+                "payment_id": str(payment_id or "").strip(),
+                "tx_id": str(tx_id or "").strip(),
+                "direct_order_id": direct_order_id,
+                "amount_asset": amount_asset,
+                "payment_asset": payment_asset,
+                "payment_network": payment_network,
+                "processed_at": _now_iso(),
+            }
+        ).execute()
+
+    await _to_thread(_upsert)
 
 
 # USDT Withdrawal functions

@@ -20,8 +20,13 @@ SEPAY_BANK_NAME = os.getenv("SEPAY_BANK_NAME", "")
 SEPAY_ACCOUNT_NUMBER = os.getenv("SEPAY_ACCOUNT_NUMBER", "")
 SEPAY_ACCOUNT_NAME = os.getenv("SEPAY_ACCOUNT_NAME", "")
 
-# Binance Pay
-BINANCE_PAY_ID = os.getenv("BINANCE_PAY_ID", "")  # Binance ID để nhận tiền
+# Binance on-chain direct payment
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
+BINANCE_DIRECT_ENABLED = os.getenv("BINANCE_DIRECT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
+BINANCE_DIRECT_COIN = os.getenv("BINANCE_DIRECT_COIN", "USDT")
+BINANCE_DIRECT_NETWORK = os.getenv("BINANCE_DIRECT_NETWORK", "")
+BINANCE_DIRECT_RATE = os.getenv("BINANCE_DIRECT_RATE", os.getenv("USDT_RATE", "25000"))
 USDT_RATE = int(os.getenv("USDT_RATE", "25000"))  # Tỷ giá 1 USDT = ? VND
 
 # Payment mode:

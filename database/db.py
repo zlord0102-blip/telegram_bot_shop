@@ -25,10 +25,28 @@ def _parse_json_list(value):
     except Exception:
         return []
 
+
+def _parse_json_object(value):
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return dict(value)
+    try:
+        data = json.loads(value)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
 DB_PATH = "data/shop.db"
 
 
 class DirectOrderFulfillmentError(RuntimeError):
+    def __init__(self, code: str, message: str | None = None):
+        super().__init__(message or code)
+        self.code = code
+
+
+class BinanceDirectOrderError(RuntimeError):
     def __init__(self, code: str, message: str | None = None):
         super().__init__(message or code)
         self.code = code
@@ -189,19 +207,6 @@ async def init_db():
                 UNIQUE(chat_id, message_id)
             )
         """)
-        # Binance deposits table
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS binance_deposits (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER,
-                usdt_amount REAL,
-                vnd_amount INTEGER,
-                code TEXT,
-                screenshot_file_id TEXT,
-                status TEXT DEFAULT 'pending',
-                created_at TEXT
-            )
-        """)
         # USDT withdrawals table
         await db.execute("""
             CREATE TABLE IF NOT EXISTS usdt_withdrawals (
@@ -224,14 +229,102 @@ async def init_db():
                 unit_price INTEGER,
                 amount INTEGER,
                 code TEXT,
+                payment_channel TEXT DEFAULT 'vietqr',
+                payment_asset TEXT,
+                payment_network TEXT,
+                payment_amount_asset REAL,
+                payment_rate_vnd REAL,
+                payment_address TEXT,
+                payment_address_tag TEXT,
+                external_payment_id TEXT,
+                external_tx_id TEXT,
+                external_paid_at TEXT,
                 status TEXT DEFAULT 'pending',
                 created_at TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bot_delivery_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                direct_order_id INTEGER NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL,
+                channel TEXT NOT NULL DEFAULT 'telegram_bot',
+                payload TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TEXT,
+                last_error TEXT,
+                sent_at TEXT,
+                last_attempt_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY (direct_order_id) REFERENCES direct_orders(id)
             )
         """)
         try:
             await db.execute("ALTER TABLE direct_orders ADD COLUMN bonus_quantity INTEGER DEFAULT 0")
         except:
             pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN payment_channel TEXT DEFAULT 'vietqr'")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN payment_asset TEXT")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN payment_network TEXT")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN payment_amount_asset REAL")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN payment_rate_vnd REAL")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN payment_address TEXT")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN payment_address_tag TEXT")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN external_payment_id TEXT")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN external_tx_id TEXT")
+        except:
+            pass
+        try:
+            await db.execute("ALTER TABLE direct_orders ADD COLUMN external_paid_at TEXT")
+        except:
+            pass
+        await db.execute("UPDATE direct_orders SET payment_channel = 'vietqr' WHERE payment_channel IS NULL")
+        await db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS direct_orders_pending_binance_amount_idx
+            ON direct_orders (payment_channel, payment_asset, payment_network, payment_amount_asset)
+            WHERE status = 'pending'
+              AND payment_channel = 'binance_onchain'
+              AND payment_amount_asset IS NOT NULL
+        """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS binance_processed_deposits (
+                payment_id TEXT PRIMARY KEY,
+                tx_id TEXT,
+                direct_order_id INTEGER,
+                amount_asset REAL,
+                payment_asset TEXT,
+                payment_network TEXT,
+                processed_at TEXT
+            )
+        """)
+        await db.execute("DROP TABLE IF EXISTS binance_deposits")
         await db.commit()
 
 
@@ -799,7 +892,9 @@ async def get_pending_direct_orders():
     async with aiosqlite.connect(DB_PATH) as db:
         cursor = await db.execute(
             """SELECT id, user_id, product_id, quantity, bonus_quantity, unit_price, amount, code, created_at
-               FROM direct_orders WHERE status = 'pending'"""
+               FROM direct_orders
+               WHERE status = 'pending'
+                 AND COALESCE(payment_channel, 'vietqr') != 'binance_onchain'"""
         )
         return await cursor.fetchall()
 
@@ -807,6 +902,282 @@ async def set_direct_order_status(order_id: int, status: str):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE direct_orders SET status = ? WHERE id = ?", (status, order_id))
         await db.commit()
+
+
+def _normalize_bot_delivery_outbox_row(row):
+    if not row:
+        return None
+    payload = _parse_json_object(row["payload"])
+    return {
+        "id": int(row["id"] or 0),
+        "direct_order_id": int(row["direct_order_id"] or 0),
+        "user_id": int(row["user_id"] or 0),
+        "channel": str(row["channel"] or "telegram_bot"),
+        "payload": payload,
+        "status": str(row["status"] or "pending"),
+        "attempt_count": int(row["attempt_count"] or 0),
+        "next_retry_at": row["next_retry_at"],
+        "last_error": row["last_error"],
+        "sent_at": row["sent_at"],
+        "last_attempt_at": row["last_attempt_at"],
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+async def get_bot_delivery_outbox(direct_order_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            "SELECT * FROM bot_delivery_outbox WHERE direct_order_id = ? LIMIT 1",
+            (direct_order_id,),
+        )
+        row = await cursor.fetchone()
+        return _normalize_bot_delivery_outbox_row(row)
+
+
+async def ensure_bot_delivery_outbox(
+    direct_order_id: int,
+    user_id: int,
+    payload: dict,
+    reset_status: bool = False,
+):
+    now_iso = datetime.now().isoformat()
+    payload_json = json.dumps(payload, ensure_ascii=False)
+    existing = await get_bot_delivery_outbox(direct_order_id)
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        if existing:
+            updates = [
+                "user_id = ?",
+                "payload = ?",
+                "channel = ?",
+                "updated_at = ?",
+            ]
+            params = [user_id, payload_json, "telegram_bot", now_iso]
+            if reset_status:
+                updates.extend([
+                    "status = ?",
+                    "last_error = NULL",
+                    "next_retry_at = ?",
+                    "sent_at = NULL",
+                    "last_attempt_at = NULL",
+                ])
+                params.extend(["pending", now_iso])
+            params.append(existing["id"])
+            await db.execute(
+                f"UPDATE bot_delivery_outbox SET {', '.join(updates)} WHERE id = ?",
+                params,
+            )
+        else:
+            await db.execute(
+                """
+                INSERT INTO bot_delivery_outbox (
+                    direct_order_id, user_id, channel, payload, status, attempt_count,
+                    next_retry_at, last_error, sent_at, last_attempt_at, created_at, updated_at
+                ) VALUES (?, ?, 'telegram_bot', ?, 'pending', 0, ?, NULL, NULL, NULL, ?, ?)
+                """,
+                (direct_order_id, user_id, payload_json, now_iso, now_iso, now_iso),
+            )
+        await db.commit()
+
+    return await get_bot_delivery_outbox(direct_order_id)
+
+
+async def get_due_bot_delivery_outbox(limit: int = 20):
+    now_iso = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT *
+            FROM bot_delivery_outbox
+            WHERE status = 'pending'
+              AND (next_retry_at IS NULL OR next_retry_at <= ?)
+            ORDER BY COALESCE(next_retry_at, created_at) ASC, id ASC
+            LIMIT ?
+            """,
+            (now_iso, max(1, int(limit or 20))),
+        )
+        rows = await cursor.fetchall()
+        return [_normalize_bot_delivery_outbox_row(row) for row in rows if row]
+
+
+async def mark_bot_delivery_outbox_sending(outbox_id: int, attempt_count: int):
+    now_iso = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE bot_delivery_outbox
+            SET status = 'sending',
+                attempt_count = ?,
+                last_attempt_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (attempt_count, now_iso, now_iso, outbox_id),
+        )
+        await db.commit()
+
+
+async def mark_bot_delivery_outbox_sent(outbox_id: int, attempt_count: int):
+    now_iso = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE bot_delivery_outbox
+            SET status = 'sent',
+                attempt_count = ?,
+                last_error = NULL,
+                next_retry_at = NULL,
+                sent_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (attempt_count, now_iso, now_iso, outbox_id),
+        )
+        await db.commit()
+
+
+async def schedule_bot_delivery_outbox_retry(
+    outbox_id: int,
+    attempt_count: int,
+    last_error: str,
+    next_retry_at: str | None,
+):
+    now_iso = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE bot_delivery_outbox
+            SET status = 'pending',
+                attempt_count = ?,
+                last_error = ?,
+                next_retry_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (attempt_count, str(last_error or "")[:2000], next_retry_at, now_iso, outbox_id),
+        )
+        await db.commit()
+
+
+async def mark_bot_delivery_outbox_failed(outbox_id: int, attempt_count: int, last_error: str):
+    now_iso = datetime.now().isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """
+            UPDATE bot_delivery_outbox
+            SET status = 'failed',
+                attempt_count = ?,
+                last_error = ?,
+                next_retry_at = NULL,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (attempt_count, str(last_error or "")[:2000], now_iso, outbox_id),
+        )
+        await db.commit()
+
+
+async def get_recent_confirmed_direct_orders_missing_delivery(limit: int = 50, hours: int = 48):
+    cutoff_iso = (datetime.now() - timedelta(hours=max(1, int(hours or 48)))).isoformat()
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT d.*
+            FROM direct_orders d
+            LEFT JOIN bot_delivery_outbox o ON o.direct_order_id = d.id
+            WHERE d.status = 'confirmed'
+              AND d.created_at >= ?
+              AND o.id IS NULL
+            ORDER BY d.created_at DESC, d.id DESC
+            LIMIT ?
+            """,
+            (cutoff_iso, max(1, int(limit or 50))),
+        )
+        rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+
+async def build_bot_delivery_payload_for_direct_order(direct_order_id: int):
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT id, user_id, product_id, quantity, bonus_quantity, amount, code, created_at, status
+            FROM direct_orders
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (direct_order_id,),
+        )
+        direct_order = await cursor.fetchone()
+        if not direct_order or str(direct_order["status"] or "") != "confirmed":
+            return None
+
+        cursor = await db.execute(
+            "SELECT id, name, description, format_data FROM products WHERE id = ? LIMIT 1",
+            (direct_order["product_id"],),
+        )
+        product = await cursor.fetchone()
+
+        expected_delivered_quantity = max(1, int(direct_order["quantity"] or 1)) + max(0, int(direct_order["bonus_quantity"] or 0))
+        cursor = await db.execute(
+            """
+            SELECT id, content, price, quantity, order_group, created_at
+            FROM orders
+            WHERE user_id = ? AND product_id = ? AND created_at >= ?
+            ORDER BY created_at ASC, id ASC
+            LIMIT 20
+            """,
+            (direct_order["user_id"], direct_order["product_id"], direct_order["created_at"]),
+        )
+        order_rows = await cursor.fetchall()
+        if not order_rows:
+            return None
+
+        selected = None
+        for row in order_rows:
+            items = _parse_json_list(row["content"])
+            delivered_quantity = max(len(items), int(row["quantity"] or 0))
+            if delivered_quantity == expected_delivered_quantity and int(row["price"] or 0) == int(direct_order["amount"] or 0):
+                selected = (row, items)
+                break
+        if selected is None:
+            for row in order_rows:
+                items = _parse_json_list(row["content"])
+                if len(items) == expected_delivered_quantity:
+                    selected = (row, items)
+                    break
+        if selected is None:
+            for row in order_rows:
+                items = _parse_json_list(row["content"])
+                if items:
+                    selected = (row, items)
+                    break
+        if selected is None:
+            return None
+
+        order_row, items = selected
+        return {
+            "directOrderId": int(direct_order["id"] or 0),
+            "orderId": int(order_row["id"] or 0) or None,
+            "userId": int(direct_order["user_id"] or 0),
+            "productId": int(direct_order["product_id"] or 0),
+            "productName": (product["name"] if product else f"#{int(direct_order['product_id'] or 0)}") or f"#{int(direct_order['product_id'] or 0)}",
+            "description": (product["description"] if product else "") or "",
+            "formatData": (product["format_data"] if product else "") or "",
+            "quantity": max(1, int(direct_order["quantity"] or 1)),
+            "bonusQuantity": max(0, int(direct_order["bonus_quantity"] or 0)),
+            "deliveredQuantity": max(1, len(items) or expected_delivered_quantity),
+            "amount": max(0, int(direct_order["amount"] or 0)),
+            "code": str(direct_order["code"] or ""),
+            "orderGroup": str(order_row["order_group"] or ""),
+            "items": [str(item or "") for item in items],
+        }
 
 
 async def fulfill_bot_direct_order(
@@ -1033,63 +1404,154 @@ async def get_bank_settings():
         "sepay_token": await get_setting("sepay_token", ""),
     }
 
-# Binance deposit functions
-async def create_binance_deposit(user_id: int, usdt_amount: float, vnd_amount: int, code: str):
+# Binance on-chain direct-order helpers
+async def create_binance_direct_order(
+    user_id: int,
+    product_id: int,
+    quantity: int,
+    unit_price: int,
+    amount: int,
+    code: str,
+    *,
+    bonus_quantity: int = 0,
+    payment_asset: str,
+    payment_network: str,
+    payment_amount_asset: float,
+    payment_rate_vnd: float,
+    payment_address: str,
+    payment_address_tag: str = "",
+):
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            cursor = await db.execute(
+                """INSERT INTO direct_orders (
+                       user_id, product_id, quantity, bonus_quantity, unit_price, amount, code,
+                       payment_channel, payment_asset, payment_network, payment_amount_asset,
+                       payment_rate_vnd, payment_address, payment_address_tag, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 'binance_onchain', ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    user_id,
+                    product_id,
+                    quantity,
+                    bonus_quantity,
+                    unit_price,
+                    amount,
+                    code,
+                    payment_asset,
+                    payment_network,
+                    payment_amount_asset,
+                    payment_rate_vnd,
+                    payment_address,
+                    payment_address_tag or "",
+                    datetime.now().isoformat(),
+                ),
+            )
+        except aiosqlite.IntegrityError as exc:
+            message = str(exc).lower()
+            if "direct_orders_pending_binance_amount_idx" in message or "unique" in message:
+                raise BinanceDirectOrderError("duplicate_binance_amount", str(exc))
+            raise
+        await db.commit()
+        return {
+            "direct_order_id": cursor.lastrowid,
+            "code": code,
+            "payment_asset": payment_asset,
+            "payment_network": payment_network,
+            "payment_amount_asset": payment_amount_asset,
+            "payment_address": payment_address,
+            "payment_address_tag": payment_address_tag or "",
+            "created_at": datetime.now().isoformat(),
+        }
+
+
+async def get_pending_binance_direct_orders():
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            """SELECT
+                   id, user_id, product_id, quantity, bonus_quantity, unit_price, amount, code, created_at,
+                   payment_asset, payment_network, payment_amount_asset, payment_rate_vnd,
+                   payment_address, payment_address_tag, external_payment_id, external_tx_id, external_paid_at
+               FROM direct_orders
+               WHERE status = 'pending' AND payment_channel = 'binance_onchain'
+               ORDER BY created_at ASC"""
+        )
+        rows = await cursor.fetchall()
+    return [
+        {
+            "id": row[0],
+            "user_id": row[1],
+            "product_id": row[2],
+            "quantity": row[3] or 1,
+            "bonus_quantity": row[4] or 0,
+            "unit_price": row[5] or 0,
+            "amount": row[6] or 0,
+            "code": row[7] or "",
+            "created_at": row[8],
+            "payment_asset": row[9] or "",
+            "payment_network": row[10] or "",
+            "payment_amount_asset": row[11] or 0,
+            "payment_rate_vnd": row[12] or 0,
+            "payment_address": row[13] or "",
+            "payment_address_tag": row[14] or "",
+            "external_payment_id": row[15] or "",
+            "external_tx_id": row[16] or "",
+            "external_paid_at": row[17],
+        }
+        for row in rows
+    ]
+
+
+async def record_direct_order_external_payment(
+    order_id: int,
+    *,
+    payment_id: str,
+    tx_id: str,
+    paid_at: str | None,
+):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "INSERT INTO binance_deposits (user_id, usdt_amount, vnd_amount, code, created_at) VALUES (?, ?, ?, ?, ?)",
-            (user_id, usdt_amount, vnd_amount, code, datetime.now().isoformat())
+            """UPDATE direct_orders
+               SET external_payment_id = ?, external_tx_id = ?, external_paid_at = ?
+               WHERE id = ?""",
+            (payment_id, tx_id, paid_at, order_id),
         )
         await db.commit()
 
-async def update_binance_deposit_screenshot(user_id: int, code: str, file_id: str):
-    """Cập nhật screenshot cho deposit"""
+
+async def is_processed_binance_deposit(payment_id: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        cursor = await db.execute(
+            "SELECT 1 FROM binance_processed_deposits WHERE payment_id = ?",
+            (str(payment_id or "").strip(),),
+        )
+        return await cursor.fetchone() is not None
+
+
+async def mark_processed_binance_deposit(
+    payment_id: str,
+    *,
+    tx_id: str,
+    direct_order_id: int | None,
+    amount_asset: float,
+    payment_asset: str,
+    payment_network: str,
+):
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            "UPDATE binance_deposits SET screenshot_file_id = ? WHERE user_id = ? AND code = ? AND status = 'pending'",
-            (file_id, user_id, code)
+            """INSERT OR REPLACE INTO binance_processed_deposits (
+                   payment_id, tx_id, direct_order_id, amount_asset, payment_asset, payment_network, processed_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                str(payment_id or "").strip(),
+                str(tx_id or "").strip(),
+                direct_order_id,
+                amount_asset,
+                payment_asset,
+                payment_network,
+                datetime.now().isoformat(),
+            ),
         )
         await db.commit()
-
-async def get_pending_binance_deposits():
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT id, user_id, usdt_amount, vnd_amount, code, screenshot_file_id, created_at FROM binance_deposits WHERE status = 'pending' AND screenshot_file_id IS NOT NULL"
-        )
-        return await cursor.fetchall()
-
-async def get_binance_deposit_detail(deposit_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT id, user_id, usdt_amount, vnd_amount, code, screenshot_file_id, status, created_at FROM binance_deposits WHERE id = ?",
-            (deposit_id,)
-        )
-        return await cursor.fetchone()
-
-async def confirm_binance_deposit(deposit_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT user_id, usdt_amount FROM binance_deposits WHERE id = ?", (deposit_id,))
-        row = await cursor.fetchone()
-        if row:
-            await db.execute("UPDATE binance_deposits SET status = 'confirmed' WHERE id = ?", (deposit_id,))
-            await db.execute("UPDATE users SET balance_usdt = balance_usdt + ? WHERE user_id = ?", (row[1], row[0]))
-            await db.commit()
-            return row  # (user_id, usdt_amount)
-        return None
-
-async def cancel_binance_deposit(deposit_id: int):
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("UPDATE binance_deposits SET status = 'cancelled' WHERE id = ?", (deposit_id,))
-        await db.commit()
-
-async def get_user_pending_binance_deposit(user_id: int):
-    """Lấy deposit binance đang pending của user"""
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute(
-            "SELECT id, usdt_amount, vnd_amount, code FROM binance_deposits WHERE user_id = ? AND status = 'pending' ORDER BY id DESC LIMIT 1",
-            (user_id,)
-        )
-        return await cursor.fetchone()
 
 
 # USDT Withdrawal functions

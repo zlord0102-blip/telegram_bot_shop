@@ -25,10 +25,9 @@ from handlers.shop import (
     handle_shop_text, process_deposit_amount,
     handle_withdraw_text, process_withdraw_amount, process_withdraw_bank, process_withdraw_account,
     handle_buy_quantity, show_order_detail,
-    handle_binance_deposit_text, process_binance_amount, process_binance_screenshot,
     select_payment_vnd, select_payment_usdt,
-    WAITING_DEPOSIT_AMOUNT, WAITING_WITHDRAW_AMOUNT, WAITING_WITHDRAW_BANK, WAITING_WITHDRAW_ACCOUNT,
-    WAITING_BINANCE_AMOUNT, WAITING_BINANCE_SCREENSHOT
+    select_direct_payment_vietqr, select_direct_payment_binance,
+    WAITING_DEPOSIT_AMOUNT, WAITING_WITHDRAW_AMOUNT, WAITING_WITHDRAW_BANK, WAITING_WITHDRAW_ACCOUNT
 )
 from handlers.admin import (
     admin_command, admin_callback, admin_products, admin_delete_product, admin_confirm_delete_product,
@@ -40,10 +39,9 @@ from handlers.admin import (
     set_account_number_start, set_account_number_done,
     set_account_name_start, set_account_name_done,
     set_sepay_token_start, set_sepay_token_done,
-    set_binance_id_start, set_binance_id_done,
     set_admin_contact_start, set_admin_contact_done,
     cancel_conversation, ADD_PRODUCT_NAME, ADD_PRODUCT_PRICE, ADD_PRODUCT_PRICE_USDT, ADD_STOCK_CONTENT,
-    BANK_NAME, ACCOUNT_NUMBER, ACCOUNT_NAME, SEPAY_TOKEN, BINANCE_ID, ADMIN_CONTACT, NOTIFICATION_MESSAGE, EDIT_STOCK_CONTENT, SEARCH_USER_ID,
+    BANK_NAME, ACCOUNT_NUMBER, ACCOUNT_NAME, SEPAY_TOKEN, ADMIN_CONTACT, NOTIFICATION_MESSAGE, EDIT_STOCK_CONTENT, SEARCH_USER_ID,
     handle_admin_products_text, handle_admin_stock_text, handle_admin_transactions_text,
     handle_admin_bank_text, handle_exit_admin, notification_command, notification_send,
     admin_manage_stock, admin_view_stock, admin_stock_page, admin_stock_detail,
@@ -51,8 +49,6 @@ from handlers.admin import (
     admin_export_stock, admin_clear_unsold_stock, admin_clear_all_stock,
     admin_sold_codes_menu, admin_sold_by_product, admin_export_sold_codes,
     admin_sold_by_user_start, admin_sold_by_user_search, handle_admin_sold_codes_text,
-    admin_binance_deposits, admin_view_binance_deposit,
-    admin_confirm_binance_deposit, admin_cancel_binance_deposit
 )
 from sepay_checker import run_checker, init_checker_db
 
@@ -216,20 +212,6 @@ def setup_bot():
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
     
-    # Binance deposit conversation - support both languages
-    # English users use "🔶 Deposit" button (only option for them)
-    binance_deposit_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^(💵 Nạp USDT|🔶 Deposit)$"), handle_binance_deposit_text)],
-        states={
-            WAITING_BINANCE_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_binance_amount)],
-            WAITING_BINANCE_SCREENSHOT: [
-                MessageHandler(filters.PHOTO, process_binance_screenshot),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, process_binance_screenshot),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
-    )
-    
     # Bank settings conversations
     bank_name_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(set_bank_name_start, pattern="^set_bank_name$")],
@@ -249,12 +231,6 @@ def setup_bot():
     sepay_token_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(set_sepay_token_start, pattern="^set_sepay_token$")],
         states={SEPAY_TOKEN: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_sepay_token_done)]},
-        fallbacks=[CommandHandler("cancel", cancel_conversation)],
-    )
-    
-    binance_id_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(set_binance_id_start, pattern="^set_binance_id$")],
-        states={BINANCE_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_binance_id_done)]},
         fallbacks=[CommandHandler("cancel", cancel_conversation)],
     )
     
@@ -285,12 +261,10 @@ def setup_bot():
     app.add_handler(search_user_conv)
     app.add_handler(deposit_conv)
     app.add_handler(withdraw_conv)
-    app.add_handler(binance_deposit_conv)
     app.add_handler(bank_name_conv)
     app.add_handler(account_number_conv)
     app.add_handler(account_name_conv)
     app.add_handler(sepay_token_conv)
-    app.add_handler(binance_id_conv)
     app.add_handler(admin_contact_conv)
     
     # Reply keyboard handlers (user) - support both languages
@@ -320,6 +294,8 @@ def setup_bot():
     app.add_handler(CallbackQueryHandler(show_product, pattern="^buy_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_vnd, pattern="^pay_vnd_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_usdt, pattern="^pay_usdt_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_direct_payment_vietqr, pattern="^directpay_vietqr_\\d+_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_direct_payment_binance, pattern="^directpay_binance_\\d+_\\d+$"))
     app.add_handler(CallbackQueryHandler(show_account, pattern="^account$"))
     app.add_handler(CallbackQueryHandler(show_history, pattern="^history$"))
     app.add_handler(CallbackQueryHandler(show_order_detail, pattern="^order_detail_\\d+$"))
@@ -358,10 +334,6 @@ def setup_bot():
     app.add_handler(CallbackQueryHandler(admin_export_sold_codes, pattern="^admin_export_sold_\\d+$"))
     
     # Binance deposits callbacks
-    app.add_handler(CallbackQueryHandler(admin_binance_deposits, pattern="^admin_binance$"))
-    app.add_handler(CallbackQueryHandler(admin_view_binance_deposit, pattern="^admin_viewbn_\\d+$"))
-    app.add_handler(CallbackQueryHandler(admin_confirm_binance_deposit, pattern="^admin_confirmbn_\\d+$"))
-    app.add_handler(CallbackQueryHandler(admin_cancel_binance_deposit, pattern="^admin_cancelbn_\\d+$"))
     
     return app
 

@@ -40,14 +40,6 @@ EN = {
     "deposit_min": "❌ Minimum amount is 5,000đ. Please try again:",
     "invalid_amount": "❌ Invalid amount. Please enter a number:",
     
-    # Binance
-    "binance_title": "💰 DEPOSIT VIA BINANCE PAY\n\nEnter USDT amount (minimum 1 USDT):",
-    "binance_info": "💳 BINANCE TRANSFER INFO\n\n🆔 Binance ID: {id}\n💵 Amount: {amount} USDT\n📝 Note: {code}\n\n📱 INSTRUCTIONS:\n1. Open Binance app → Pay → Send\n2. Enter Binance ID: {id}\n3. Enter amount: {amount} USDT\n4. Note: {code}\n5. Confirm transfer\n6. 📸 Take screenshot and SEND HERE\n\n⚠️ Please send screenshot after transfer:",
-    "binance_min": "❌ Minimum is 1 USDT. Please try again:",
-    "binance_send_screenshot": "❌ Please send a PHOTO of the transaction screenshot!",
-    "binance_submitted": "✅ DEPOSIT REQUEST SUBMITTED!\n\n💵 Amount: {amount} USDT\n📝 Code: {code}\n\n⏳ Admin will review within 5-30 minutes.\nYou'll be notified when funds are added!",
-    "binance_success": "✅ BINANCE DEPOSIT SUCCESSFUL!\n\n💵 Amount: {amount} USDT\n\nThank you for using our service!",
-    
     # Withdraw
     "withdraw_title": "💸 WITHDRAW\n\n💰 Current balance: {balance}đ\n⚠️ Minimum: 10,000đ\n\nEnter amount to withdraw:",
     "withdraw_min": "❌ Minimum is 10,000đ. Please try again:",

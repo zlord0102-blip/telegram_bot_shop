@@ -146,26 +146,6 @@ def migrate_settings(conn, supabase):
     _batch_insert("settings", payload, supabase)
 
 
-def migrate_binance_deposits(conn, supabase):
-    rows = conn.execute(
-        "SELECT id, user_id, usdt_amount, vnd_amount, code, screenshot_file_id, status, created_at FROM binance_deposits"
-    ).fetchall()
-    payload = [
-        {
-            "id": r[0],
-            "user_id": r[1],
-            "usdt_amount": r[2],
-            "vnd_amount": r[3],
-            "code": r[4],
-            "screenshot_file_id": r[5],
-            "status": r[6],
-            "created_at": _parse_dt(r[7]),
-        }
-        for r in rows
-    ]
-    _batch_insert("binance_deposits", payload, supabase)
-
-
 def migrate_usdt_withdrawals(conn, supabase):
     rows = conn.execute(
         "SELECT id, user_id, usdt_amount, wallet_address, network, status, created_at FROM usdt_withdrawals"
@@ -218,7 +198,6 @@ def main():
         migrate_deposits(conn, supabase)
         migrate_withdrawals(conn, supabase)
         migrate_settings(conn, supabase)
-        migrate_binance_deposits(conn, supabase)
         migrate_usdt_withdrawals(conn, supabase)
         migrate_processed_transactions(conn, supabase)
     finally:

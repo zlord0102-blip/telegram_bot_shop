@@ -11,7 +11,6 @@ VI = {
     "btn_shop": "🛒 Danh mục",
     "btn_deposit": "➕ Nạp tiền",
     "btn_withdraw": "💸 Rút tiền",
-    "btn_binance": "🔶 Nạp Binance",
     "btn_cancel": "❌ Hủy",
     "btn_back": "🔙 Quay lại",
     
@@ -41,14 +40,6 @@ VI = {
     "deposit_cancelled": "❌ Đã hủy nạp tiền.",
     "deposit_min": "❌ Số tiền tối thiểu là 5,000đ. Vui lòng nhập lại:",
     "invalid_amount": "❌ Số tiền không hợp lệ. Vui lòng nhập số:",
-    
-    # Binance
-    "binance_title": "💰 NẠP TIỀN QUA BINANCE PAY\n\nNhập số USDT muốn nạp (tối thiểu 1 USDT):",
-    "binance_info": "💳 THÔNG TIN CHUYỂN KHOẢN BINANCE\n\n🆔 Binance ID: {id}\n💵 Số tiền: {amount} USDT\n📝 Ghi chú: {code}\n\n📱 HƯỚNG DẪN:\n1. Mở app Binance → Pay → Send\n2. Nhập Binance ID: {id}\n3. Nhập số tiền: {amount} USDT\n4. Ghi chú: {code}\n5. Xác nhận chuyển tiền\n6. 📸 Chụp màn hình giao dịch thành công và GỬI VÀO ĐÂY\n\n⚠️ Vui lòng gửi ảnh chụp màn hình sau khi chuyển tiền:",
-    "binance_min": "❌ Số tiền tối thiểu là 1 USDT. Vui lòng nhập lại:",
-    "binance_send_screenshot": "❌ Vui lòng gửi ẢNH chụp màn hình giao dịch!",
-    "binance_submitted": "✅ ĐÃ GỬI YÊU CẦU NẠP TIỀN!\n\n💵 Số tiền: {amount} USDT\n📝 Mã: {code}\n\n⏳ Admin sẽ kiểm tra và duyệt trong vòng 5-30 phút.\nBạn sẽ nhận được thông báo khi tiền được cộng!",
-    "binance_success": "✅ NẠP TIỀN BINANCE THÀNH CÔNG!\n\n💵 Số tiền: {amount} USDT\n\nCảm ơn bạn đã sử dụng dịch vụ!",
     
     # Withdraw
     "withdraw_title": "💸 RÚT TIỀN\n\n💰 Số dư hiện tại: {balance}đ\n⚠️ Tối thiểu: 10,000đ\n\nNhập số tiền muốn rút:",

@@ -30,14 +30,12 @@ def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None):
         return rows
 
     if lang == 'en':
-        # English: Only Binance deposit (foreigners can't use SePay)
+        # English: no direct deposit button in reply keyboard; checkout offers direct rails when needed.
         buttons: list[str | KeyboardButton] = []
         if enabled("show_shop"):
             buttons.append("🛒 Shop")
         if enabled("show_balance"):
             buttons.append("💰 Balance")
-        if enabled("show_usdt"):
-            buttons.append("🔶 Deposit")
         if enabled("show_history"):
             buttons.append("📜 History")
         if enabled("show_support"):
@@ -46,7 +44,7 @@ def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None):
             buttons.append("🌐 Language")
         keyboard = build_rows(buttons)
     else:
-        # Vietnamese: Both SePay (VND) and Binance (USDT)
+        # Vietnamese: no legacy Binance deposit button in reply keyboard; checkout offers direct rails when needed.
         buttons: list[str | KeyboardButton] = []
         if enabled("show_shop"):
             buttons.append("🛒 Danh mục")
@@ -56,8 +54,6 @@ def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None):
             buttons.append("➕ Nạp tiền")
         if enabled("show_withdraw"):
             buttons.append("💸 Rút tiền")
-        if enabled("show_usdt"):
-            buttons.append("💵 Nạp USDT")
         if enabled("show_history"):
             buttons.append("📜 Lịch sử")
         if enabled("show_support"):
@@ -238,16 +234,6 @@ def pending_withdrawals_keyboard(withdrawals):
     for w in withdrawals:
         keyboard.append([InlineKeyboardButton(f" #{w[0]} - {w[2]:,}đ", callback_data=f"admin_view_{w[0]}")])
     keyboard.append([InlineKeyboardButton(" Quay lại", callback_data="admin")])
-    return InlineKeyboardMarkup(keyboard)
-
-
-def pending_binance_deposits_keyboard(deposits):
-    """Keyboard cho danh sách yêu cầu nạp Binance"""
-    keyboard = []
-    for d in deposits:
-        # d: (id, user_id, usdt_amount, vnd_amount, code, screenshot_file_id, created_at)
-        keyboard.append([InlineKeyboardButton(f"🔶 #{d[0]} - {d[2]} USDT ({d[3]:,}đ)", callback_data=f"admin_viewbn_{d[0]}")])
-    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
 

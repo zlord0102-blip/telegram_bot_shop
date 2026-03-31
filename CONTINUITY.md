@@ -1,4 +1,5 @@
 Goal: Improve Admin Dashboard and sales operations, including dynamic pricing/promotions, support-contact UX, and configurable product list pagination:
+
 - Completed scope: Dashboard/Stocks/Users enhancements, chat, direct-order timeout, reports cards, stock counters.
 - New scope: Quantity-tier pricing + Buy X Get Y promotions configurable from Dashboard and applied in customer purchase flow.
 - Current scope add-on: revert Support button to legacy logic (message + inline links) and allow multiple support contacts (Telegram/Facebook/Zalo...) from Dashboard settings.
@@ -82,6 +83,11 @@ Goal: Improve Admin Dashboard and sales operations, including dynamic pricing/pr
   - Reduce global UI roughness by shrinking form/control sizes and typography scale to be closer to reference.
 - Current scope add-on (latest request): storefront branding rename:
   - Update storefront header brand/logo label and browser title text to `Destiny Store`.
+- Current scope add-on: complete storefront UI redesign to match chototmmo.com style:
+  - Rewrote `globals.css` with light palette (#f0f2f5 bg, #2563eb primary, Inter font)
+  - Rewrote `StorefrontPage.tsx` JSX: header (logo, search, user pill), hero (Deal Hot countdown + Category Grid 4x3), product cards (banner, badges GIAO NGAY, stars rating, price red, sold count), pagination, floating support, FAQ accordion, footer
+  - Preserved all existing logic: checkout/auth/orders/polling/pricing
+  - Build verified clean, browser test confirmed all sections
 - Current scope add-on (latest request): hero visual alignment refinement:
   - Match hero block to provided sample by:
     - changing brand-highlight color style in hero title (closer to outlined blue tone),
@@ -214,8 +220,24 @@ Goal: Improve Admin Dashboard and sales operations, including dynamic pricing/pr
   - Bot Dashboard `Users` page should support richer filter/sort modes such as username A-Z/Z-A, users with revenue, and revenue ascending/descending.
 - Current scope add-on (latest request): Bot `Users` order-history modal usability hotfix:
   - The modal opened by clicking `Đơn đã mua` is currently trapping the screen when content is long; it needs bounded height and internal scrolling so admins can close/interact with it reliably.
+- Current scope add-on (latest request): replace the unused legacy Binance manual flow with a new Binance on-chain auto-payment rail for Telegram Bot checkout:
+  - Remove the old Binance Pay ID + screenshot + manual review flow end-to-end.
+  - Add a new `Binance on-chain` direct-payment option for Telegram Bot checkout only.
+  - The new flow must mirror VietQR/SePay operations:
+    - create pending direct order,
+    - show transfer instructions,
+    - poll Binance deposit history,
+    - auto-match payment,
+    - auto-fulfill and deliver stock.
+  - Scope includes bot runtime, checker, database/schema, and Bot Dashboard settings/ops cleanup.
+- Current scope add-on (latest request): extend the new Binance direct rail into the English Telegram bot checkout flow so foreign-language users can use direct Binance payment instead of being forced into the internal USDT-wallet path.
+- Current scope add-on (latest request): add a new `Licenses` module in `admin-dashboard` backed by Supabase so operator can manage license keys for external extensions.
+  - Each license key belongs to exactly one extension.
+  - License keys have `expires_at` and bind to exactly one custom `fingerprint`.
+  - Extensions activate once with raw key, then validate periodically with a stored activation token.
 
 Success Criteria:
+
 - Existing completed behaviors remain working:
   - Dashboard VN labels + latest orders username/product name + Asia/Ho_Chi_Minh time display.
   - Stocks bulk select/edit/delete + delete-by-text tab + polished tabs/checkbox + 2/3 input + 1/3 button layout.
@@ -280,6 +302,7 @@ Success Criteria:
 - Bot Dashboard `Users` page should support richer filter/sort controls for username/order/revenue-oriented admin review.
 
 Constraints/Assumptions:
+
 - Work within this repo only.
 - Admin dashboard code lives under `admin-dashboard/`. (confirmed)
 - Bot and dashboard run with Supabase in production; sqlite fallback still exists in code. **ASSUMED**
@@ -314,6 +337,7 @@ Constraints/Assumptions:
 - User clarified product-channel behavior: only stock is shared between Bot and Website; all other Website product fields are independent from Bot fields. **CONFIRMED**
 
 Key Decisions:
+
 - Keep prior direct-order timeout at 10 minutes (`cancelled`) unchanged.
 - Implement pricing/promotion in a way that preserves existing order data and backward compatibility when no rule is set.
 - Store pricing tiers with deterministic ordering by threshold quantity.
@@ -347,6 +371,13 @@ Key Decisions:
 - Custom-check delete-by-result should physically remove matched stock rows from DB and refresh stock list/summary.
 - Custom-check form-history decision: persist recent values client-side (`localStorage`) with max 5 entries and dedupe.
 - Cron integration decision: provide a separate server endpoint using `CRON_SECRET` auth (header) and reuse same custom-check execution logic as admin endpoint.
+- License-management implementation decision:
+  - Reuse the existing `admin-dashboard` project and its admin-auth/API pattern; do not create a separate dashboard project.
+  - Add a new SQL file `supabase_schema_license_management.sql` instead of modifying older schema files.
+  - Model license state with separate tables for extensions, keys, activations, and check logs.
+  - Store only hashed forms of raw license keys and activation tokens in DB; dashboard may show the raw key only once at creation time.
+  - Public extension flow is `activate` with raw key once, then `validate` with activation token + fingerprint on a fixed 6-hour recheck cadence.
+  - Public status surface for v1 is fixed to: `active`, `expired`, `revoked`, `extension_disabled`, `fingerprint_mismatch`, `not_found`.
 - Relay-notify decision: implement in payment-confirmation flow (`sepay_checker`) and read settings (`Bot Token`, `UserID`) from Dashboard-managed `settings` table.
 - Relay-notify content decision: standardize Vietnamese labels and prefer product name lookup/propagation over raw product ID display.
 - SePay checker performance decision:
@@ -480,9 +511,103 @@ Key Decisions:
 - Latest Bot `Users` order-history modal hotfix decision:
   - Fix this in dashboard markup/CSS only; keep the modal interaction model and analytics payload unchanged.
   - Use a scrollable modal body with fixed action row instead of letting the whole modal grow taller than the viewport. **ASSUMED**
+- Latest Binance replacement decision:
+  - Remove the legacy Binance manual deposit path completely rather than keeping backward compatibility, because the user confirmed it has never been used. **CONFIRMED**
+  - New Binance scope is Telegram Bot checkout only; Website/storefront is out of scope for this batch. **CONFIRMED**
+  - Binance rail is implemented as on-chain deposit against Binance Wallet APIs (`deposit/address`, `deposit/history`, `capital/config/getall`), not Binance Pay / UID. **CONFIRMED**
+  - The existing `USDT balance purchase` and `USDT withdrawal` flows must remain intact; only the old manual Binance-deposit flow is removed. **CONFIRMED**
+  - Matching for Binance direct orders must not rely on `code`; it should rely on exact configured amount + network/address/tag metadata. **CONFIRMED**
+  - English bot checkout should no longer be USDT-wallet-only; it should surface the same direct-payment entry point as Vietnamese users, localized for English, while still keeping the optional internal USDT-balance purchase button when the user actually has enough USDT balance. **CONFIRMED**
+  - Binance button visibility should depend on static config validity (`enabled + api key + secret + coin + network + rate`) rather than a live Binance API preflight, because hiding the button on transient API/permission failures makes checkout debugging opaque. **CONFIRMED**
 
 Progress State:
+
 - Done:
+  - Completed the Dashboard performance + payment-delivery reliability batch in code:
+    - Shared admin session/token path:
+      - added `admin-dashboard/lib/adminSessionClient.ts` with short client token/session cache and authenticated fetch helpers.
+      - added `admin-dashboard/app/api/admin-session/route.ts`.
+      - extended `admin-dashboard/app/api/_shared/adminAuth.ts` with short TTL bearer-token auth cache and `authCacheHit`.
+      - migrated remaining dashboard callers away from per-page `supabase.auth.getSession()`:
+        - `admin-dashboard/components/AppShell.tsx`
+        - `admin-dashboard/components/WebsiteShell.tsx`
+        - `admin-dashboard/lib/adminAnalyticsClient.ts`
+        - `admin-dashboard/lib/adminFinanceClient.ts`
+        - `admin-dashboard/lib/licenseAdminClient.ts`
+        - `admin-dashboard/app/(admin)/direct-orders/page.tsx`
+        - `admin-dashboard/app/(admin)/users/page.tsx`
+        - `admin-dashboard/app/(admin)/users/[userId]/page.tsx`
+        - `admin-dashboard/app/(admin)/stock/page.tsx`
+        - `admin-dashboard/app/(admin)/products/page.tsx`
+        - `admin-dashboard/app/(website-dashboard)/website/direct-orders/page.tsx`
+        - `admin-dashboard/app/(website-dashboard)/website/products/page.tsx`
+      - `admin-dashboard/app/api/stock/custom-check/route.ts` now uses shared `requireAdminSession(...)` instead of its own `auth.getUser(...)` + `admin_users` round-trip.
+    - Admin analytics diagnostics:
+      - `admin-dashboard/app/api/_shared/adminAnalytics.ts` now returns source metadata (`rpc` / `fallback`) for Dashboard and Users snapshots and logs when RPC snapshot functions are unavailable.
+      - `admin-dashboard/app/api/admin-analytics/dashboard/route.ts` and `admin-dashboard/app/api/admin-analytics/users/route.ts` now return:
+        - `Server-Timing`
+        - `X-Admin-Analytics-Source`
+        - `X-Admin-Auth-Cache`
+        - existing analytics cache header.
+    - Durable bot delivery outbox:
+      - added new SQL migration `supabase_schema_bot_delivery_outbox.sql`.
+      - added shared Next.js helper `admin-dashboard/app/api/_shared/botDelivery.ts`.
+      - manual bot fulfill route `admin-dashboard/app/api/direct-orders/fulfill/route.ts` now:
+        - fulfills order first,
+        - enqueues delivery outbox,
+        - attempts immediate Telegram delivery,
+        - returns delivery state instead of failing the whole route when Telegram send fails.
+      - added admin retry route:
+        - `POST /api/direct-orders/[id]/retry-delivery`
+      - Bot `Direct Orders` page now shows:
+        - delivery status
+        - delivery attempts
+        - delivery last error / next retry
+        - retry-delivery action for confirmed unsent orders.
+      - `sepay_checker.py` now:
+        - always enqueues bot delivery after successful bot direct-order fulfillment (VietQR + Binance on-chain),
+        - classifies retryable vs terminal Telegram delivery errors,
+        - schedules retries via outbox instead of swallowing exceptions,
+        - reconciles recent confirmed bot direct orders missing outbox rows,
+        - processes due delivery retries without re-fulfilling stock/order data.
+      - `database/db.py` and `database/supabase_db.py` now include bot-delivery outbox persistence helpers + payload rebuild helpers for reconciliation/retry.
+  - Implemented the new license-management module in `admin-dashboard` for external extensions:
+    - Added new SQL migration file:
+      - `supabase_schema_license_management.sql`
+      - tables: `license_extensions`, `license_keys`, `license_activations`, `license_check_logs`
+      - helper functions/triggers for `updated_at`, immutable extension code, effective-status handling, and check logging
+      - public RPCs:
+        - `activate_license_key(...)`
+        - `validate_license_activation(...)`
+      - admin-only RLS policies for all new license tables
+    - Added shared dashboard/server helpers:
+      - `admin-dashboard/app/api/_shared/supabaseAdmin.ts`
+      - `admin-dashboard/app/api/_shared/license.ts`
+      - `admin-dashboard/lib/licenseTypes.ts`
+      - `admin-dashboard/lib/licenseAdminClient.ts`
+    - Added admin dashboard nav/page:
+      - `admin-dashboard/components/AppShell.tsx` now includes `Licenses`
+      - `admin-dashboard/app/(admin)/licenses/page.tsx`
+      - Page supports 3 tabs:
+        - `Extensions`
+        - `Keys`
+        - `Activations`
+    - Added admin license API routes:
+      - `GET/POST /api/licenses/extensions`
+      - `GET/POST /api/licenses/keys`
+      - `POST /api/licenses/keys/[id]/revoke`
+      - `POST /api/licenses/keys/[id]/reactivate`
+      - `POST /api/licenses/keys/[id]/reset-activation`
+      - `GET /api/licenses/activations`
+    - Added public extension-facing routes:
+      - `POST /api/licenses/activate`
+      - `POST /api/licenses/validate`
+    - Added `SUPABASE_SERVICE_ROLE_KEY` placeholder to `admin-dashboard/.env.example` because public license routes require service-role DB access.
+    - Hardened license SQL/RPC behavior:
+      - concurrent first-activation attempts now tolerate the one-active-bind unique index without leaving the flow inconsistent,
+      - `log_license_check(...)` execute permission is no longer exposed to anon/authenticated roles.
+  - Local validation for the new license-management batch passed:
+    - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`)
   - Storefront filter behavior tweak completed:
     - `Hiện cả hết hàng` now defaults to ON when page mounts.
     - `Reset` filters now returns `Hiện cả hết hàng` to ON state.
@@ -537,7 +662,7 @@ Progress State:
   - Integrated pricing + promo into direct-order fulfillment:
     - `sepay_checker.py`:
       - Reads `bonus_quantity`, reserves/delivers `quantity + bonus_quantity`.
-      - Stores order total as expected paid amount (not delivered_qty * unit_price).
+      - Stores order total as expected paid amount (not delivered_qty \* unit_price).
       - User confirmations include bonus information.
     - `admin-dashboard/app/api/direct-orders/fulfill/route.ts`:
       - Manual fulfill uses `quantity + bonus_quantity` stock.
@@ -1593,6 +1718,89 @@ Progress State:
     - the modal body scrolls,
     - the `Đóng` button stays reachable,
     - background interaction remains blocked until modal close as intended.
+- Now:
+  - New active implementation batch is the Binance flow replacement:
+    - remove legacy manual Binance deposit flow (`binance_pay_id`, screenshot/manual review, `binance_deposits` surfaces),
+    - add Binance on-chain auto-payment as a new direct-order rail for Telegram Bot checkout.
+  - Binance replacement is now implemented in code and locally validated:
+    - `supabase_schema_bot_binance_onchain.sql` defines the new final DB state for this rail:
+      - drops legacy `binance_deposits` + old confirm/cancel RPCs,
+      - adds Binance payment metadata columns onto `direct_orders`,
+      - creates `binance_processed_deposits`,
+      - adds RPC `create_binance_direct_order(...)`.
+    - `helpers/binance_client.py` uses official Binance Wallet API endpoints:
+      - `GET /sapi/v1/capital/config/getall`
+      - `GET /sapi/v1/capital/deposit/address`
+      - `GET /sapi/v1/capital/deposit/hisrec`
+      - matching is now based on `coin`, `network`, `address`, `addressTag`, `amount`, `txId`, `insertTime` / `completeTime`. **CONFIRMED from Binance docs**
+    - `handlers/shop.py` now offers `💳 VietQR` + `🟡 Binance` in direct checkout, creates pending Binance direct orders with exact on-chain amount, and shows no-screenshot instructions.
+    - `sepay_checker.py` is now multi-rail:
+      - keeps SePay flow as before,
+      - polls Binance deposit history for pending `payment_channel='binance_onchain'`,
+      - auto-cancels expired Binance direct orders,
+      - fulfills matched Binance orders automatically,
+      - persists external payment metadata and idempotency checkpoint/state.
+    - Legacy manual Binance runtime/admin flow is removed from bot sources:
+      - no screenshot conversation states,
+      - no admin review callbacks/handlers,
+      - no Bot Dashboard manual Binance-deposit table/actions.
+    - Bot Dashboard cleanup is implemented:
+      - `Settings` replaced `binance_pay_id` with Binance on-chain config keys,
+      - `USDT` page now only manages `usdt_withdrawals`,
+      - `Direct Orders` now shows payment channel/metadata and blocks manual approve for Binance auto-payment orders,
+      - admin finance route/client no longer support `binance_deposit`.
+    - Bootstrap/runtime cleanup is implemented:
+      - `supabase_schema_all_in_one.sql` now includes the Binance on-chain migration block at the end,
+      - sqlite init drops legacy `binance_deposits`,
+      - sqlite->Supabase migration script no longer migrates legacy Binance deposits.
+  - Next step outside code is to apply the new Binance SQL migration in Supabase and then test with a real Binance deposit.
+- Now:
+  - New follow-up finding from user QA:
+    - current Binance on-chain direct rail is only wired into the VND/direct checkout branch in `handlers/shop.py`.
+    - the `USDT` purchase path still means spending internal `balance_usdt`, not paying Binance on-chain directly.
+    - English `show_product(...)` is explicitly USDT-only, so it never offers the new `VietQR / Binance` direct-payment chooser.
+    - The latest settings screenshot also shows `binance_direct_network` and `binance_direct_rate` left empty, so even the direct-checkout keyboard would hide/fail the Binance option until those fields are configured.
+    - The Vietnamese flow text currently says `chọn VietQR hoặc Binance` before quantity entry, but the actual button row is generated later by `direct_checkout_keyboard(...)` and only includes Binance when `get_binance_runtime_safe()` returns an available runtime.
+    - Official Binance Wallet docs confirm `coin` and `network` are separate request parameters for deposit address/history, so `USDT` belongs in the coin field while `network` must be a chain code such as `TRX`, `BSC`, or `ETH` depending on the chosen deposit rail. **CONFIRMED**
+  - English Binance direct-checkout follow-up is now implemented in code and locally validated:
+    - `handlers/shop.py` English `show_product(...)` no longer hard-codes `USDT only`.
+    - English users now see localized payment-method buttons built by the same shared keyboard path as Vietnamese users.
+    - The `pay_vnd_...` path now renders English copy so foreign users can enter quantity and continue into the `VietQR / Binance` direct-payment chooser instead of only the internal wallet flow.
+    - The `pay_usdt_...` path remains available for real internal-USDT-balance purchases and is now localized in English.
+  - Latest user screenshot confirms Binance is still hidden because the `Network` field is currently set to `USDT`.
+  - In the implemented Binance client, `coin` and `network` are separate values; `USDT` is valid for `coin` but invalid for `network`.
+  - With settings `coin=USDT` and `network=USDT`, `helpers/binance_client.py -> get_network_config("USDT", "USDT")` cannot resolve a Binance network row, so `get_binance_runtime_safe()` returns `None` and `direct_checkout_keyboard(...)` renders only `VietQR`.
+  - Operational recommendation for the current bot rail:
+    - use `coin=USDT`,
+    - prefer `network=TRX` for a simple low-fee/common international USDT checkout,
+    - use `BSC` if the payer base primarily uses BNB Chain wallets,
+    - avoid `ETH` unless ERC20 compatibility is specifically required because fees are typically higher. **ASSUMED from common network characteristics; the hard requirement remains that sender and receiving wallet networks must match.**
+  - Latest user QA with corrected `network=TRX` indicates the remaining issue is not the saved setting values themselves.
+  - Root cause in code: the checkout button previously depended on `get_binance_direct_runtime()` succeeding during menu render; any Binance API failure (permission, IP restriction, temporary API error) silently hid the button.
+  - Follow-up fix is now implemented:
+    - `handlers/shop.py -> get_binance_runtime_safe()` now shows the Binance button whenever static config is valid, without requiring live Binance API success at render time.
+    - selecting Binance still performs the real runtime/API call and now returns clearer error text if Binance credentials, permission, or connectivity are the problem.
+  - Latest pricing QA found a separate Binance direct-order bug:
+    - when a product has both `price` (VND) and `price_usdt`, the Binance direct-payment message/order was still derived from the VND price using `binance_direct_rate`, which produced underpriced exact amounts such as `0.038455 USDT` for a product whose intended USDT price was `1.0`.
+  - Binance pricing follow-up is now implemented and locally validated:
+    - `handlers/shop.py` now checks `product.price_usdt` for the Binance rail and computes a dedicated USDT pricing snapshot when present.
+    - `helpers/binance_client.py` now includes `compute_binance_exact_amount_from_asset(...)` so exact-match suffixes can be added on top of the quoted asset amount itself instead of always converting from VND first.
+    - `handlers/shop.py -> send_binance_direct_payment(...)` now:
+      - uses the quoted USDT total as the base amount whenever `price_usdt` is configured,
+      - falls back to VND -> USDT conversion only for products that do not have a USDT price,
+      - still stores VND-equivalent order totals for operational/reporting compatibility by converting the quoted USDT amount with the configured Binance rate,
+      - shows the quoted/listed USDT amount in the payment instruction message for clarity.
+  - Latest Binance network QA found another operator-facing mismatch:
+    - admins may enter common wallet-network names like `BEP20`, but Binance Wallet API expects canonical network codes like `BSC`.
+    - before this follow-up, `TRX` worked but `BEP20` failed with `Binance on-chain chưa sẵn sàng` because runtime validation treated `BEP20` as a literal API network value.
+  - Binance network-alias follow-up is now implemented and locally validated:
+    - `helpers/binance_client.py` now normalizes common aliases:
+      - `TRC20 -> TRX`
+      - `BEP20 -> BSC`
+      - `ERC20 -> ETH`
+    - runtime settings, capital-config lookup, and deposit-address lookup now all use the normalized Binance code.
+    - `handlers/shop.py` now shows a friendlier network label in payment instructions, e.g. `BSC (BEP20)` instead of only `BSC`.
+    - `admin-dashboard/app/(admin)/settings/page.tsx` now clarifies in help text/placeholder that both alias-style and Binance-style network names are accepted.
 - Next:
   - Apply `supabase_schema_direct_order_fulfillment.sql` and `supabase_schema_bot_balance_purchase_fulfillment.sql` in Supabase for deployed atomic paths.
   - Apply `supabase_schema_bot_admin_analytics.sql` in Supabase so Dashboard / Reports / Users use DB-side snapshot functions in production.
@@ -1600,8 +1808,22 @@ Progress State:
   - Apply `supabase_schema_bot_user_profile_names.sql` in Supabase so Telegram display names can persist into `users.first_name/last_name`.
   - Optional next pass after this is reducing the Dashboard DB aggregation cost itself (counts/sum over large tables) if first uncached load is still too slow.
   - Optional follow-up for the new modal: add pagination or export/copy actions if a user can have very large order history.
+  - Apply the new Binance migration(s) in Supabase once implementation is complete so the deployed DB has:
+    - direct-order Binance payment metadata,
+    - Binance idempotency/checkpoint tables,
+    - removal of legacy `binance_deposits` surfaces from the bootstrap path.
+  - Test in production/staging with a real Binance transfer:
+    - create a Binance direct order,
+    - verify exact amount uniqueness,
+    - verify checker match and auto-fulfillment,
+    - verify late/wrong-network/wrong-amount deposits do not auto-fulfill.
+  - Re-test the Telegram bot in English after valid Binance settings are saved:
+    - product detail should show localized payment-method buttons,
+    - entering quantity through the direct-payment button should lead to `VietQR / Binance`,
+    - Binance button should appear only when `binance_direct_network`, `binance_direct_rate`, and API credentials are valid.
 
 Validation:
+
 - `npm -C admin-dashboard run build` passed after pricing/promo changes.
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/shop.py sepay_checker.py database/db.py database/supabase_db.py helpers/pricing.py` passed.
 - `npm -C admin-dashboard run build` passed after removing Products `USDT` button.
@@ -1761,9 +1983,53 @@ Validation:
 - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after bot intro/support settings wiring + Users filter/sort extension.
 - `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/start.py handlers/shop.py helpers/ui.py` passed after bot intro/support text helper + handler updates.
 - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after the Bot `Users` order-history modal scrollability hotfix.
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile sepay_checker.py handlers/shop.py handlers/admin.py run.py database/db.py database/supabase_db.py helpers/binance_client.py helpers/ui.py keyboards/inline.py locales/vi.py locales/en.py` passed after the Binance on-chain replacement batch.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after Bot Dashboard Binance cleanup (`Settings`, `USDT`, `Direct Orders`, `admin-finance`).
+- `python3 -m py_compile handlers/shop.py` passed after extending Binance direct checkout into the English bot flow and localizing the payment-selection path.
+- `python3 -m py_compile handlers/shop.py` passed after changing Binance button gating to static-config validity and improving Binance selection error messages.
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/shop.py helpers/binance_client.py sepay_checker.py database/db.py database/supabase_db.py` passed after fixing Binance direct pricing to prefer `price_usdt` over VND conversion when a product has a USDT price.
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile handlers/shop.py helpers/binance_client.py sepay_checker.py database/db.py database/supabase_db.py` passed after adding Binance network alias normalization (`BEP20/TRC20/ERC20`) and friendlier network labels in the payment message.
+  - `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after clarifying Binance Settings network help text / placeholder for alias support.
+- `./node_modules/.bin/tsc --noEmit -p tsconfig.json` (run in `admin-dashboard/`) passed after shared admin-session/auth-cache rollout, analytics source/auth headers, direct-orders delivery outbox UI, and retry-delivery route.
+- `PYTHONPYCACHEPREFIX=/tmp/codex-pycache python3 -m py_compile sepay_checker.py database/db.py database/supabase_db.py` passed after bot delivery outbox/retry + reconcile integration.
+- Now:
+  - License-management implementation is completed in repo and locally type-checked.
+  - Next step outside code is operational:
+    - apply `supabase_schema_license_management.sql` in Supabase,
+    - ensure `SUPABASE_SERVICE_ROLE_KEY` is configured for `admin-dashboard`,
+    - create at least one extension in the new `Licenses` page,
+    - generate a test key and verify `POST /api/licenses/activate` then `POST /api/licenses/validate`.
+- Now:
+  - Current follow-up is documentation/usage clarification for the new license module.
+  - Need to explain the meaning of the public extension code (`extensionCode`) and provide concrete integration steps/examples for external extensions calling the public license APIs.
+- Done:
+  - Added operator/integration doc `LICENSE_API_INTEGRATION.md` covering:
+    - meaning of public extension code (`extensionCode`)
+    - public `activate` / `validate` API contract
+    - example payloads/responses
+    - fingerprint guidance
+    - client-side pseudocode and status-handling recommendations
+- Now:
+  - New active implementation batch focuses on:
+    - Bot Dashboard performance after the API-first refactor
+    - Bot payment-delivery reliability when DB fulfill succeeds but Telegram delivery message fails
+  - Current implementation assumptions for this batch:
+    - deployed Supabase may still be missing some analytics/fulfillment SQL, so runtime must expose `rpc` vs `fallback` clearly instead of assuming all RPCs exist
+    - the most important production failure shape is `direct_order` already confirmed/fulfilled but user receives no delivery message
+  - Next step in repo:
+    - apply `supabase_schema_bot_delivery_outbox.sql` in Supabase before deploy so outbox persistence/retry is active in production.
+    - verify Bot admin analytics responses now expose `X-Admin-Analytics-Source` and `X-Admin-Auth-Cache` as expected.
+    - test live/staging bot direct-order flows:
+      - fulfill -> outbox row created
+      - temporary Telegram failure -> pending retry
+      - terminal Telegram failure -> failed with visible error
+      - admin retry route resends without touching stock/order state.
 
 Open Questions:
+
 - No blocking questions for the current analysis request.
+- No blocking questions for the Binance replacement request; rail/scope/removal intent are now confirmed.
+- No blocking questions for the current license-management implementation request; v1 scope and runtime behavior are confirmed.
 - Should both features apply to all order flows (bot direct purchase, admin-created orders, any API order endpoint) or only end-user bot checkout? **UNCONFIRMED**
 - Can each product have multiple buy-x-get-y rules at once, or only one active rule? (currently assuming one active rule/product). **UNCONFIRMED**
 - If quantity does not match any explicit tier above base, should fallback use product base price? (currently assuming yes). **UNCONFIRMED**
@@ -1780,6 +2046,7 @@ Open Questions:
 - For the new bot success text examples, the exact desired icon on the `Số lượng` line is not explicitly specified; use a package-style icon consistently across success/history text unless the user later specifies a different one. **UNCONFIRMED**
 
 Notes:
+
 - `npm -C admin-dashboard run lint` prompts for initial ESLint setup (interactive), so it was not run.
 - Important: functions with changed return table shape in Postgres require `DROP FUNCTION ...` then `CREATE FUNCTION`; `CREATE OR REPLACE` is not enough.
 - Latest explicit user constraint: new SQL must be added in new SQL files, not old SQL files.

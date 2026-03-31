@@ -1,14 +1,17 @@
+import logging
 import random
 import string
 import io
+from decimal import Decimal, ROUND_HALF_UP
 from telegram import Update, InputFile, KeyboardButton, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from database import (
     get_products, get_product, get_balance,
     get_user_orders, create_deposit_with_settings, get_or_create_user,
     create_direct_order_with_settings,
+    create_binance_direct_order,
     get_user_language, get_balance_usdt,
-    fulfill_bot_balance_purchase, DirectOrderFulfillmentError
+    fulfill_bot_balance_purchase, DirectOrderFulfillmentError, BinanceDirectOrderError
 )
 from keyboards import (
     products_keyboard, confirm_buy_keyboard,
@@ -22,14 +25,25 @@ from helpers.purchase_messages import (
     build_delivery_message,
     build_purchase_summary_text,
 )
+from helpers.binance_client import (
+    BinanceApiError,
+    BinanceConfigError,
+    compute_binance_exact_amount,
+    compute_binance_exact_amount_from_asset,
+    format_binance_amount,
+    get_binance_direct_settings,
+    get_binance_direct_runtime,
+)
 from helpers.pricing import (
     get_max_affordable_quantity,
     get_max_quantity_by_stock,
     get_pricing_snapshot,
     normalize_price_tiers,
 )
-from config import MOMO_PHONE, MOMO_NAME, ADMIN_IDS, SEPAY_ACCOUNT_NUMBER, SEPAY_BANK_NAME, SEPAY_ACCOUNT_NAME, BINANCE_PAY_ID, USDT_RATE, PAYMENT_MODE
+from config import MOMO_PHONE, MOMO_NAME, ADMIN_IDS, SEPAY_ACCOUNT_NUMBER, SEPAY_BANK_NAME, SEPAY_ACCOUNT_NAME, USDT_RATE, PAYMENT_MODE
 from locales import get_text
+
+logger = logging.getLogger(__name__)
 
 def make_file(items: list, header: str = "") -> io.BytesIO:
     """Tạo file nhanh từ list items"""
@@ -41,37 +55,100 @@ def make_file(items: list, header: str = "") -> io.BytesIO:
     buf.seek(0)
     return buf
 
-def format_pricing_rules(product: dict) -> str:
+def format_pricing_rules(product: dict, lang: str = "vi") -> str:
     lines: list[str] = []
     tiers = normalize_price_tiers(product.get("price_tiers"))
     if tiers:
-        lines.append("📉 Giá theo SL:")
+        lines.append("📉 Bulk pricing:" if lang == "en" else "📉 Giá theo SL:")
         lines.append("")
-        lines.extend([f"      - Từ {tier['min_quantity']}: {tier['unit_price']:,}đ" for tier in tiers])
+        if lang == "en":
+            lines.extend([f"      - From {tier['min_quantity']}: {tier['unit_price']:,}đ" for tier in tiers])
+        else:
+            lines.extend([f"      - Từ {tier['min_quantity']}: {tier['unit_price']:,}đ" for tier in tiers])
 
     buy_qty = int(product.get("promo_buy_quantity") or 0)
     bonus_qty = int(product.get("promo_bonus_quantity") or 0)
     if buy_qty > 0 and bonus_qty > 0:
         if lines:
             lines.append("")
-        lines.append(f"🎁 Khuyến mãi: mua {buy_qty} tặng {bonus_qty}")
+        if lang == "en":
+            lines.append(f"🎁 Promotion: buy {buy_qty} get {bonus_qty}")
+        else:
+            lines.append(f"🎁 Khuyến mãi: mua {buy_qty} tặng {bonus_qty}")
 
     return "\n".join(lines)
 
 
-def format_product_overview(product: dict, include_usdt_price: bool = False) -> str:
-    lines = [
-        f"📦 {product['name']}",
-        f"💰 Giá: {int(product['price']):,}đ",
-    ]
+def format_product_overview(product: dict, include_usdt_price: bool = False, lang: str = "vi") -> str:
+    if lang == "en":
+        lines = [
+            f"📦 {product['name']}",
+            f"💰 Price: {int(product['price']):,}đ",
+        ]
+    else:
+        lines = [
+            f"📦 {product['name']}",
+            f"💰 Giá: {int(product['price']):,}đ",
+        ]
     if include_usdt_price and float(product.get("price_usdt") or 0) > 0:
-        lines.append(f"💵 Giá USDT: {product['price_usdt']} USDT")
-    lines.append(f"📦 Còn: {int(product['stock'])}")
+        lines.append(
+            f"💵 USDT Price: {product['price_usdt']} USDT"
+            if lang == "en"
+            else f"💵 Giá USDT: {product['price_usdt']} USDT"
+        )
+    lines.append(
+        f"📦 In stock: {int(product['stock'])}"
+        if lang == "en"
+        else f"📦 Còn: {int(product['stock'])}"
+    )
 
-    pricing_rules = format_pricing_rules(product)
+    pricing_rules = format_pricing_rules(product, lang=lang)
     if pricing_rules:
         lines.append(pricing_rules)
     return "\n".join(lines)
+
+
+def build_payment_method_keyboard(
+    *,
+    product: dict,
+    product_id: int,
+    lang: str,
+    payment_mode: str,
+    max_vnd: int,
+    max_usdt: int,
+) -> InlineKeyboardMarkup:
+    keyboard = []
+    preview_vnd_price = int(get_pricing_snapshot(product, 1, "vnd")["unit_price"])
+
+    if product['price'] > 0 and (payment_mode != "balance" or max_vnd > 0):
+        if lang == "en":
+            if payment_mode == "direct":
+                label = "💳 Direct Payment"
+            elif payment_mode == "hybrid":
+                label = f"💳 VND / Direct ({preview_vnd_price:,}đ)"
+            else:
+                label = f"💰 VND Balance ({preview_vnd_price:,}đ)"
+        else:
+            vnd_label = "💰 VNĐ"
+            show_price = True
+            if payment_mode == "direct":
+                vnd_label = "💳 Thanh toán trực tiếp"
+                show_price = False
+            elif payment_mode == "hybrid":
+                vnd_label = "💳 VNĐ/Direct"
+            label = f"{vnd_label} (từ {preview_vnd_price:,}đ)" if show_price else vnd_label
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"pay_vnd_{product_id}")])
+
+    if product['price_usdt'] > 0 and max_usdt > 0:
+        usdt_label = (
+            f"💵 USDT Balance ({product['price_usdt']} USDT)"
+            if lang == "en"
+            else f"💵 USDT ({product['price_usdt']} USDT)"
+        )
+        keyboard.append([InlineKeyboardButton(usdt_label, callback_data=f"pay_usdt_{product_id}")])
+
+    keyboard.append([InlineKeyboardButton("🗑 Xóa" if lang != "en" else "🗑 Delete", callback_data="delete_msg")])
+    return InlineKeyboardMarkup(keyboard)
 
 
 async def send_purchase_delivery_result(
@@ -179,6 +256,76 @@ async def get_payment_mode() -> str:
     return mode
 
 
+async def get_binance_runtime_safe():
+    try:
+        settings = await get_binance_direct_settings()
+        if settings.get("valid"):
+            return settings
+    except Exception as exc:
+        logger.warning("Failed to read Binance direct settings for checkout button: %s", exc)
+        return None
+
+    try:
+        runtime = await get_binance_direct_runtime()
+        if runtime.get("available"):
+            return runtime
+    except (BinanceConfigError, BinanceApiError) as exc:
+        logger.warning("Binance direct runtime check failed while rendering checkout button: %s", exc)
+        return None
+    return None
+
+
+async def direct_checkout_keyboard(product_id: int, quantity: int):
+    rows = [[InlineKeyboardButton("💳 VietQR", callback_data=f"directpay_vietqr_{product_id}_{quantity}")]]
+    if await get_binance_runtime_safe():
+        rows.append([InlineKeyboardButton("🟡 Binance", callback_data=f"directpay_binance_{product_id}_{quantity}")])
+    rows.append([InlineKeyboardButton("🗑 Xóa", callback_data="delete_msg")])
+    return InlineKeyboardMarkup(rows)
+
+
+async def prompt_direct_payment_options(
+    *,
+    product: dict,
+    quantity: int,
+    total_price: int,
+    bonus_quantity: int,
+    lang: str,
+    product_id: int,
+    message=None,
+    query=None,
+):
+    delivered_quantity = quantity + max(0, int(bonus_quantity or 0))
+    bonus_line = f"\n🎁 Tặng thêm: {bonus_quantity}" if bonus_quantity else ""
+    text = (
+        "💳 Chọn phương thức thanh toán trực tiếp\n\n"
+        f"📦 Sản phẩm: {product['name']}\n"
+        f"🔢 Số lượng mua: {quantity}\n"
+        f"📥 Số lượng nhận: {delivered_quantity}"
+        f"{bonus_line}\n"
+        f"💰 Tổng thanh toán: {int(total_price):,}đ\n\n"
+        "Vui lòng chọn một phương thức bên dưới:"
+    )
+    if lang == "en":
+        text = (
+            "💳 Choose direct payment method\n\n"
+            f"📦 Product: {product['name']}\n"
+            f"🔢 Paid quantity: {quantity}\n"
+            f"📥 Delivered quantity: {delivered_quantity}"
+            f"{bonus_line}\n"
+            f"💰 Total: {int(total_price):,}đ\n\n"
+            "Please choose a payment rail below:"
+        )
+
+    keyboard = await direct_checkout_keyboard(product_id, quantity)
+    if message is not None:
+        prompt_msg = await message.reply_text(text, reply_markup=keyboard)
+        return prompt_msg
+    if query is not None:
+        await query.edit_message_text(text, reply_markup=keyboard)
+        return query.message
+    return None
+
+
 async def send_direct_payment(context: ContextTypes.DEFAULT_TYPE, chat_id: int, lang: str, user_id: int,
                               product_id: int, product_name: str, quantity: int, unit_price: int, total_price: int,
                               bonus_quantity: int = 0):
@@ -237,6 +384,127 @@ async def send_direct_payment(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
         )
         mark_bot_message(chat_id, msg.message_id)
 
+
+async def send_binance_direct_payment(
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    lang: str,
+    user_id: int,
+    product_id: int,
+    product_name: str,
+    quantity: int,
+    unit_price: int,
+    total_price: int,
+    bonus_quantity: int = 0,
+    quoted_total_asset: float | None = None,
+):
+    runtime = await get_binance_direct_runtime()
+    if not runtime.get("available"):
+        raise BinanceConfigError("binance_direct_unavailable")
+
+    code = f"BNBUY {user_id}{random.randint(1000, 9999)}"
+    created_order = None
+    exact_amount_text = ""
+
+    rate_vnd = Decimal(str(runtime["rate_vnd"]))
+    quoted_asset_amount = Decimal(str(quoted_total_asset or 0)).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP) if quoted_total_asset else Decimal("0")
+    amount_vnd_for_order = int(total_price)
+    unit_price_vnd_for_order = int(unit_price)
+    if quoted_asset_amount > 0 and quantity > 0:
+        amount_vnd_for_order = int((quoted_asset_amount * rate_vnd).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+        per_unit_asset = (quoted_asset_amount / Decimal(quantity)).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+        unit_price_vnd_for_order = int((per_unit_asset * rate_vnd).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+    for _ in range(50):
+        suffix = random.randint(1, 999)
+        if quoted_asset_amount > 0:
+            exact_amount = compute_binance_exact_amount_from_asset(quoted_asset_amount, suffix)
+        else:
+            exact_amount = compute_binance_exact_amount(
+                int(total_price),
+                rate_vnd,
+                suffix,
+            )
+        exact_amount_text = format_binance_amount(exact_amount)
+        try:
+            created_order = await create_binance_direct_order(
+                user_id=user_id,
+                product_id=product_id,
+                quantity=quantity,
+                unit_price=unit_price_vnd_for_order,
+                amount=amount_vnd_for_order,
+                code=code,
+                bonus_quantity=bonus_quantity,
+                payment_asset=str(runtime["coin"]),
+                payment_network=str(runtime["network"]),
+                payment_amount_asset=exact_amount_text,
+                payment_rate_vnd=format(rate_vnd, "f"),
+                payment_address=str(runtime["address"]),
+                payment_address_tag=str(runtime.get("address_tag") or ""),
+            )
+            break
+        except BinanceDirectOrderError as exc:
+            if exc.code == "duplicate_binance_amount":
+                continue
+            raise
+
+    if not created_order:
+        raise BinanceDirectOrderError("duplicate_binance_amount")
+
+    delivered_quantity = quantity + max(0, int(bonus_quantity or 0))
+    tag_value = str(runtime.get("address_tag") or "").strip()
+    tag_label = "Memo/Tag" if tag_value else ""
+    tag_block = f"\n🏷 {tag_label}: <code>{tag_value}</code>" if tag_value else ""
+    bonus_line = f"\n🎁 Tặng thêm: <code>{bonus_quantity}</code>" if bonus_quantity else ""
+    quoted_asset_block = ""
+    network_label = str(runtime.get("network_label") or runtime["network"])
+    if quoted_asset_amount > 0:
+        quoted_asset_block = f"💵 Giá USDT gốc: <code>{format_binance_amount(quoted_asset_amount)} {runtime['coin']}</code>\n"
+
+    text = (
+        "🟡 THANH TOÁN BINANCE ON-CHAIN\n\n"
+        f"📦 Sản phẩm: <code>{product_name}</code>\n"
+        f"🔢 Số lượng mua: <code>{quantity}</code>\n"
+        f"📥 Số lượng nhận: <code>{delivered_quantity}</code>"
+        f"{bonus_line}\n\n"
+        f"🪙 Coin: <code>{runtime['coin']}</code>\n"
+        f"🌐 Network: <code>{network_label}</code>\n"
+        f"🏦 Address: <code>{runtime['address']}</code>"
+        f"{tag_block}\n"
+        f"{quoted_asset_block}"
+        f"💰 Số tiền chính xác: <code>{exact_amount_text} {runtime['coin']}</code>\n"
+        f"📝 Mã hỗ trợ: <code>{created_order['code']}</code>\n\n"
+        "⚠️ Chuyển đúng network và đúng số tiền.\n"
+        "⚠️ Không cần gửi screenshot.\n"
+        "✅ Sau khi Binance ghi nhận, hệ thống sẽ tự gửi sản phẩm."
+    )
+    if lang == "en":
+        text = (
+            "🟡 BINANCE ON-CHAIN PAYMENT\n\n"
+            f"📦 Product: <code>{product_name}</code>\n"
+            f"🔢 Paid quantity: <code>{quantity}</code>\n"
+            f"📥 Delivered quantity: <code>{delivered_quantity}</code>"
+            f"{bonus_line}\n\n"
+            f"🪙 Coin: <code>{runtime['coin']}</code>\n"
+            f"🌐 Network: <code>{network_label}</code>\n"
+            f"🏦 Address: <code>{runtime['address']}</code>"
+            f"{tag_block}\n"
+            f"{quoted_asset_block.replace('Giá USDT gốc', 'Listed USDT price')}"
+            f"💰 Exact amount: <code>{exact_amount_text} {runtime['coin']}</code>\n"
+            f"📝 Support code: <code>{created_order['code']}</code>\n\n"
+            "⚠️ Send with the correct network and exact amount.\n"
+            "⚠️ No screenshot is required.\n"
+            "✅ The system will auto-deliver after Binance confirms the deposit."
+        )
+
+    msg = await context.bot.send_message(
+        chat_id=chat_id,
+        text=text,
+        parse_mode="HTML",
+        reply_markup=await get_user_keyboard(lang),
+    )
+    mark_bot_message(chat_id, msg.message_id)
+
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
 
@@ -245,8 +513,6 @@ WAITING_DEPOSIT_AMOUNT = 1
 WAITING_WITHDRAW_AMOUNT = 2
 WAITING_WITHDRAW_BANK = 3
 WAITING_WITHDRAW_ACCOUNT = 4
-WAITING_BINANCE_AMOUNT = 5
-WAITING_BINANCE_SCREENSHOT = 6
 WAITING_USDT_WITHDRAW_AMOUNT = 7
 WAITING_USDT_WITHDRAW_WALLET = 8
 
@@ -300,26 +566,20 @@ async def handle_buy_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE
             else 0
         )
 
-        keyboard = []
-        preview_vnd_price = int(get_pricing_snapshot(product, 1, "vnd")["unit_price"])
-        if product['price'] > 0 and (payment_mode != "balance" or max_vnd > 0):
-            vnd_label = "💰 VNĐ"
-            show_price = True
-            if payment_mode == "direct":
-                vnd_label = "💳 VietQR"
-                show_price = False
-            elif payment_mode == "hybrid":
-                vnd_label = "💳 VNĐ/VietQR"
-            label = f"{vnd_label} (từ {preview_vnd_price:,}đ)" if show_price else vnd_label
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"pay_vnd_{product_id}")])
-        if product['price_usdt'] > 0 and max_usdt > 0:
-            keyboard.append([InlineKeyboardButton(f"💵 USDT ({product['price_usdt']} USDT)", callback_data=f"pay_usdt_{product_id}")])
-        keyboard.append([InlineKeyboardButton("🗑 Xóa", callback_data="delete_msg")])
-
         remind_text = "⚠️ Bạn chưa chọn phương thức thanh toán.\nVui lòng chọn bên dưới trước khi nhập số lượng."
         if lang == 'en':
             remind_text = "⚠️ Please choose a payment method first, then enter quantity."
-        menu_msg = await update.message.reply_text(remind_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        menu_msg = await update.message.reply_text(
+            remind_text,
+            reply_markup=build_payment_method_keyboard(
+                product=product,
+                product_id=product_id,
+                lang=lang,
+                payment_mode=payment_mode,
+                max_vnd=max_vnd,
+                max_usdt=max_usdt,
+            ),
+        )
         set_last_menu_message(context, menu_msg)
         return
     
@@ -394,18 +654,17 @@ async def handle_buy_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         should_direct = payment_mode == 'direct' or (payment_mode == 'hybrid' and balance < total_price)
         if should_direct:
-            await send_direct_payment(
-                context=context,
-                chat_id=update.effective_user.id,
-                lang=lang,
-                user_id=user_id,
-                product_id=product_id,
-                product_name=product['name'],
+            prompt_msg = await prompt_direct_payment_options(
+                product=product,
                 quantity=quantity,
-                unit_price=int(unit_price),
                 total_price=int(total_price),
                 bonus_quantity=bonus_quantity,
+                lang=lang,
+                product_id=product_id,
+                message=update.message,
             )
+            if prompt_msg is not None:
+                set_last_menu_message(context, prompt_msg)
 
             context.user_data.pop('buying_product_id', None)
             context.user_data.pop('buying_max', None)
@@ -759,38 +1018,47 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_balance_usdt = await get_balance_usdt(user_id)
     payment_mode = await get_payment_mode()
     
-    pricing_rules = format_pricing_rules(product)
     max_by_stock = get_max_quantity_by_stock(product, product["stock"])
 
     if lang == 'en':
-        # English: USDT only
-        if product['price_usdt'] <= 0:
-            await query.edit_message_text(
-                f"❌ {product['name']} is not available for USDT payment.",
-                reply_markup=delete_keyboard()
-            )
-            return
-        max_buy = get_max_affordable_quantity(product, user_balance_usdt, product["stock"], currency="usdt")
+        if payment_mode == "balance":
+            max_vnd = get_max_affordable_quantity(product, user_balance, product["stock"], currency="vnd") if product["price"] > 0 else 0
+        else:
+            max_vnd = max_by_stock if product['price'] > 0 else 0
+        max_usdt = (
+            get_max_affordable_quantity(product, user_balance_usdt, product["stock"], currency="usdt")
+            if product['price_usdt'] > 0
+            else 0
+        )
         context.user_data['buying_product_id'] = product_id
         context.user_data.pop('buying_max', None)
         context.user_data.pop('buying_currency', None)
-        context.user_data['buying_max'] = max_buy
-        context.user_data['buying_currency'] = 'usdt'
-        
-        text = (
-            f"📦 {product['name']}\n"
-            f"💵 Price: {product['price_usdt']} USDT\n"
-            f"📦 In stock: {product['stock']}\n\n"
-            f"💳 Your balance: {user_balance_usdt:.2f} USDT\n"
-            f"🛒 Max can buy: {max_buy}"
-        )
-        if pricing_rules:
-            text += f"\n\n{pricing_rules}"
-        if max_buy > 0:
-            text += f"\n\n📝 Enter quantity (1-{max_buy}):"
+        text = format_product_overview(product, include_usdt_price=True, lang="en")
+        if payment_mode == "balance":
+            if product['price'] > 0:
+                text += f"\n\n💳 VND Balance: {user_balance:,}đ (max buy {max_vnd})"
+            if product['price_usdt'] > 0:
+                text += f"\n💵 USDT Balance: {user_balance_usdt:.2f} USDT (max buy {max_usdt})"
+            if max_vnd == 0 and max_usdt == 0:
+                text += "\n\n❌ Insufficient balance!"
+            else:
+                text += "\n\nSelect payment method:"
         else:
-            text += "\n\n❌ Insufficient balance!"
-        await query.edit_message_text(text, reply_markup=delete_keyboard())
+            if product['price_usdt'] > 0:
+                text += f"\n\n💵 USDT Balance: {user_balance_usdt:.2f} USDT (max buy {max_usdt})"
+            text += "\n\nSelect payment method:"
+
+        await query.edit_message_text(
+            text,
+            reply_markup=build_payment_method_keyboard(
+                product=product,
+                product_id=product_id,
+                lang="en",
+                payment_mode=payment_mode,
+                max_vnd=max_vnd,
+                max_usdt=max_usdt,
+            ),
+        )
         set_last_menu_message(context, query.message)
     else:
         # Vietnamese: VND or USDT choice
@@ -807,7 +1075,7 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['buying_product_id'] = product_id
         context.user_data.pop('buying_max', None)
         context.user_data.pop('buying_currency', None)
-        text = format_product_overview(product)
+        text = format_product_overview(product, lang="vi")
         if payment_mode == "balance":
             text += f"\n\n💳 Số dư VNĐ: {user_balance:,}đ (mua tối đa {max_vnd})"
             text += f"\n💵 Số dư USDT: {user_balance_usdt:.2f} (mua tối đa {max_usdt})"
@@ -817,23 +1085,17 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             text += "\n\nChọn phương thức thanh toán:"
         
-        keyboard = []
-        preview_vnd_price = int(get_pricing_snapshot(product, 1, "vnd")["unit_price"])
-        if product['price'] > 0 and (payment_mode != "balance" or max_vnd > 0):
-            vnd_label = "💰 VNĐ"
-            show_price = True
-            if payment_mode == "direct":
-                vnd_label = "💳 VietQR"
-                show_price = False
-            elif payment_mode == "hybrid":
-                vnd_label = "💳 VNĐ/VietQR"
-            label = f"{vnd_label} (từ {preview_vnd_price:,}đ)" if show_price else vnd_label
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"pay_vnd_{product_id}")])
-        if product['price_usdt'] > 0 and max_usdt > 0:
-            keyboard.append([InlineKeyboardButton(f"💵 USDT ({product['price_usdt']} USDT)", callback_data=f"pay_usdt_{product_id}")])
-        keyboard.append([InlineKeyboardButton("🗑 Xóa", callback_data="delete_msg")])
-
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(
+            text,
+            reply_markup=build_payment_method_keyboard(
+                product=product,
+                product_id=product_id,
+                lang="vi",
+                payment_mode=payment_mode,
+                max_vnd=max_vnd,
+                max_usdt=max_usdt,
+            ),
+        )
         set_last_menu_message(context, query.message)
 
 async def select_payment_vnd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -867,15 +1129,25 @@ async def select_payment_vnd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data['buying_max'] = max_can_buy
     context.user_data['buying_currency'] = 'vnd'
     
-    text = format_product_overview(product)
-    if payment_mode == "balance":
-        text += f"\n\n💳 Số dư: {user_balance:,}đ"
-    elif payment_mode == "hybrid":
-        text += f"\n\n💳 Số dư: {user_balance:,}đ (thiếu sẽ dùng VietQR)"
+    text = format_product_overview(product, lang=lang)
+    if lang == "en":
+        if payment_mode == "balance":
+            text += f"\n\n💳 VND Balance: {user_balance:,}đ"
+        elif payment_mode == "hybrid":
+            text += f"\n\n💳 VND Balance: {user_balance:,}đ (if insufficient, choose VietQR/Binance)"
+        else:
+            text += "\n\n💳 Payment: choose VietQR or Binance"
+        text += f"\n🛒 Max can buy: {max_can_buy}"
+        text += f"\n✍️ Enter quantity (1-{max_can_buy}):"
     else:
-        text += "\n\n💳 Thanh toán: VietQR"
-    text += f"\n🛒 Có thể mua tối đa: {max_can_buy}"
-    text += f"\n✍️ Nhập số lượng (1-{max_can_buy}):"
+        if payment_mode == "balance":
+            text += f"\n\n💳 Số dư: {user_balance:,}đ"
+        elif payment_mode == "hybrid":
+            text += f"\n\n💳 Số dư: {user_balance:,}đ (thiếu sẽ chọn VietQR/Binance)"
+        else:
+            text += "\n\n💳 Thanh toán: chọn VietQR hoặc Binance"
+        text += f"\n🛒 Có thể mua tối đa: {max_can_buy}"
+        text += f"\n✍️ Nhập số lượng (1-{max_can_buy}):"
     await query.edit_message_text(text, reply_markup=delete_keyboard())
     set_last_menu_message(context, query.message)
 
@@ -903,12 +1175,136 @@ async def select_payment_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE
     context.user_data['buying_max'] = max_can_buy
     context.user_data['buying_currency'] = 'usdt'
     
-    text = format_product_overview(product, include_usdt_price=True)
-    text += f"\n\n💳 Số dư USDT: {user_balance_usdt:.2f}"
-    text += f"\n🛒 Có thể mua tối đa: {max_can_buy}"
-    text += f"\n✍️ Nhập số lượng (1-{max_can_buy}):"
+    text = format_product_overview(product, include_usdt_price=True, lang=lang)
+    if lang == "en":
+        text += f"\n\n💳 USDT Balance: {user_balance_usdt:.2f}"
+        text += f"\n🛒 Max can buy: {max_can_buy}"
+        text += f"\n✍️ Enter quantity (1-{max_can_buy}):"
+    else:
+        text += f"\n\n💳 Số dư USDT: {user_balance_usdt:.2f}"
+        text += f"\n🛒 Có thể mua tối đa: {max_can_buy}"
+        text += f"\n✍️ Nhập số lượng (1-{max_can_buy}):"
     await query.edit_message_text(text, reply_markup=delete_keyboard())
     set_last_menu_message(context, query.message)
+
+
+async def select_direct_payment_vietqr(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = (query.data or "").split("_")
+    if len(parts) < 4:
+        await query.edit_message_text("❌ Dữ liệu thanh toán không hợp lệ.", reply_markup=delete_keyboard())
+        return
+
+    product_id = int(parts[2])
+    quantity = int(parts[3])
+    product = await get_product(product_id)
+    user_id = query.from_user.id
+    lang = await get_user_language(user_id)
+
+    if not product:
+        await query.edit_message_text(get_text(lang, "product_not_found"), reply_markup=delete_keyboard())
+        return
+
+    pricing = get_pricing_snapshot(product, quantity, "vnd")
+    required_stock = int(pricing["delivered_quantity"])
+    bonus_quantity = int(pricing["bonus_quantity"])
+    if product["stock"] < required_stock:
+        await query.edit_message_text(
+            f"❌ Không đủ hàng cho số lượng + khuyến mãi. Cần {required_stock}, hiện còn {product['stock']}.",
+            reply_markup=delete_keyboard(),
+        )
+        return
+
+    await send_direct_payment(
+        context=context,
+        chat_id=query.message.chat_id,
+        lang=lang,
+        user_id=user_id,
+        product_id=product_id,
+        product_name=product["name"],
+        quantity=quantity,
+        unit_price=int(pricing["unit_price"]),
+        total_price=int(pricing["total_price"]),
+        bonus_quantity=bonus_quantity,
+    )
+    await query.edit_message_text(
+        "✅ Đã gửi hướng dẫn VietQR. Sau khi nhận tiền, hệ thống sẽ tự gửi sản phẩm.",
+        reply_markup=delete_keyboard(),
+    )
+
+
+async def select_direct_payment_binance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    parts = (query.data or "").split("_")
+    if len(parts) < 4:
+        await query.edit_message_text("❌ Dữ liệu thanh toán không hợp lệ.", reply_markup=delete_keyboard())
+        return
+
+    product_id = int(parts[2])
+    quantity = int(parts[3])
+    product = await get_product(product_id)
+    user_id = query.from_user.id
+    lang = await get_user_language(user_id)
+
+    if not product:
+        await query.edit_message_text(get_text(lang, "product_not_found"), reply_markup=delete_keyboard())
+        return
+
+    pricing = get_pricing_snapshot(product, quantity, "vnd")
+    required_stock = int(pricing["delivered_quantity"])
+    bonus_quantity = int(pricing["bonus_quantity"])
+    if product["stock"] < required_stock:
+        await query.edit_message_text(
+            f"❌ Không đủ hàng cho số lượng + khuyến mãi. Cần {required_stock}, hiện còn {product['stock']}.",
+            reply_markup=delete_keyboard(),
+        )
+        return
+
+    quoted_total_asset = None
+    if float(product.get("price_usdt") or 0) > 0:
+        usdt_pricing = get_pricing_snapshot(product, quantity, "usdt")
+        quoted_total_asset = float(usdt_pricing["total_price"])
+
+    try:
+        await send_binance_direct_payment(
+            context=context,
+            chat_id=query.message.chat_id,
+            lang=lang,
+            user_id=user_id,
+            product_id=product_id,
+            product_name=product["name"],
+            quantity=quantity,
+            unit_price=int(pricing["unit_price"]),
+            total_price=int(pricing["total_price"]),
+            bonus_quantity=bonus_quantity,
+            quoted_total_asset=quoted_total_asset,
+        )
+    except BinanceConfigError:
+        await query.edit_message_text(
+            "❌ Binance on-chain chưa sẵn sàng. Kiểm tra lại Coin / Network / API key / API secret.",
+            reply_markup=delete_keyboard(),
+        )
+        return
+    except BinanceApiError:
+        await query.edit_message_text(
+            "❌ Không thể kết nối Binance lúc này. Kiểm tra API key permission, IP restriction hoặc thử lại sau.",
+            reply_markup=delete_keyboard(),
+        )
+        return
+    except BinanceDirectOrderError:
+        await query.edit_message_text(
+            "❌ Không thể tạo đơn Binance lúc này. Vui lòng thử lại sau.",
+            reply_markup=delete_keyboard(),
+        )
+        return
+
+    await query.edit_message_text(
+        "✅ Đã gửi hướng dẫn thanh toán Binance. Hệ thống sẽ tự gửi sản phẩm sau khi Binance ghi nhận.",
+        reply_markup=delete_keyboard(),
+    )
+
 
 async def confirm_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -953,21 +1349,14 @@ async def confirm_buy(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if payment_mode in ("direct", "hybrid") and balance < total_price:
-        await send_direct_payment(
-            context=context,
-            chat_id=query.message.chat_id,
-            lang=await get_user_language(user_id),
-            user_id=user_id,
-            product_id=product_id,
-            product_name=product['name'],
+        await prompt_direct_payment_options(
+            product=product,
             quantity=quantity,
-            unit_price=unit_price,
             total_price=total_price,
             bonus_quantity=bonus_quantity,
-        )
-        await query.edit_message_text(
-            "✅ Đã gửi VietQR thanh toán. Sau khi nhận tiền, hệ thống sẽ tự gửi sản phẩm.",
-            reply_markup=delete_keyboard()
+            lang=await get_user_language(user_id),
+            product_id=product_id,
+            query=query,
         )
         return
     
@@ -1242,141 +1631,6 @@ async def process_deposit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, parse_mode="HTML", reply_markup=delete_keyboard())
     mark_vietqr_message(query.message.chat_id, query.message.message_id)
 
-
-# ============ BINANCE PAY DEPOSIT ============
-
-async def handle_binance_deposit_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handler khi user bấm nút Nạp Binance"""
-    user_id = update.effective_user.id
-    lang = await get_user_language(user_id)
-    if not await is_feature_enabled("show_usdt"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=await get_user_keyboard(lang))
-        return ConversationHandler.END
-    await delete_last_menu_message(context, update.effective_chat.id)
-    
-    # Lấy Binance ID từ database
-    from database import get_setting
-    binance_id = await get_setting("binance_pay_id", "")
-    
-    if not binance_id and not BINANCE_PAY_ID:
-        error_text = "❌ Binance not configured!" if lang == 'en' else "❌ Chức năng nạp Binance chưa được cấu hình!"
-        await update.message.reply_text(error_text)
-        return ConversationHandler.END
-    
-    # Ưu tiên database, fallback về config
-    context.user_data['binance_id'] = binance_id or BINANCE_PAY_ID
-    
-    text = get_text(lang, "binance_title")
-    cancel_text = get_text(lang, "btn_cancel")
-    keyboard = [[KeyboardButton(cancel_text)]]
-    await update.message.reply_text(text, reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-    return WAITING_BINANCE_AMOUNT
-
-async def process_binance_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý khi user nhập số USDT"""
-    text_input = update.message.text.strip()
-    user_id = update.effective_user.id
-    lang = await get_user_language(user_id)
-    if not await is_feature_enabled("show_usdt"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=await get_user_keyboard(lang))
-        return ConversationHandler.END
-    
-    if text_input in ["❌ Hủy", "❌ Cancel"]:
-        await update.message.reply_text(get_text(lang, "deposit_cancelled"), reply_markup=await get_user_keyboard(lang))
-        return ConversationHandler.END
-    
-    try:
-        usdt_amount = float(text_input.replace(",", "."))
-        
-        if usdt_amount < 1:
-            await update.message.reply_text(get_text(lang, "binance_min"))
-            return WAITING_BINANCE_AMOUNT
-        
-        if usdt_amount > 10000:
-            max_text = "❌ Maximum is 10,000 USDT." if lang == 'en' else "❌ Số tiền tối đa là 10,000 USDT."
-            await update.message.reply_text(max_text)
-            return WAITING_BINANCE_AMOUNT
-        
-        vnd_amount = int(usdt_amount * USDT_RATE)
-        code = f"BN{user_id}{random.randint(1000, 9999)}"
-        
-        # Lấy Binance ID từ context
-        binance_id = context.user_data.get('binance_id', BINANCE_PAY_ID)
-        
-        from database import create_binance_deposit
-        await create_binance_deposit(user_id, usdt_amount, vnd_amount, code)
-        
-        context.user_data['binance_deposit_code'] = code
-        context.user_data['binance_usdt'] = usdt_amount
-        context.user_data['binance_vnd'] = vnd_amount
-        
-        text = get_text(lang, "binance_info").format(id=binance_id, amount=usdt_amount, code=code)
-        cancel_text = get_text(lang, "btn_cancel")
-        keyboard = [[KeyboardButton(cancel_text)]]
-        await update.message.reply_text(text, parse_mode="HTML", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-        return WAITING_BINANCE_SCREENSHOT
-        
-    except ValueError:
-        await update.message.reply_text(get_text(lang, "invalid_amount"))
-        return WAITING_BINANCE_AMOUNT
-
-async def process_binance_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý khi user gửi screenshot"""
-    user_id = update.effective_user.id
-    lang = await get_user_language(user_id)
-    if not await is_feature_enabled("show_usdt"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=await get_user_keyboard(lang))
-        return ConversationHandler.END
-    
-    if update.message.text and update.message.text.strip() in ["❌ Hủy", "❌ Cancel"]:
-        await update.message.reply_text(get_text(lang, "deposit_cancelled"), reply_markup=await get_user_keyboard(lang))
-        return ConversationHandler.END
-    
-    if not update.message.photo:
-        await update.message.reply_text(get_text(lang, "binance_send_screenshot"))
-        return WAITING_BINANCE_SCREENSHOT
-    
-    photo = update.message.photo[-1]
-    file_id = photo.file_id
-    
-    code = context.user_data.get('binance_deposit_code')
-    usdt_amount = context.user_data.get('binance_usdt')
-    vnd_amount = context.user_data.get('binance_vnd')
-    
-    if not code:
-        await update.message.reply_text(get_text(lang, "error"), reply_markup=await get_user_keyboard(lang))
-        return ConversationHandler.END
-    
-    from database import update_binance_deposit_screenshot
-    await update_binance_deposit_screenshot(user_id, code, file_id)
-    
-    # Thông báo cho admin (tiếng Việt) - không gửi cho chính user đang nạp
-    for admin_id in ADMIN_IDS:
-        if admin_id == user_id:
-            continue  # Không gửi thông báo cho chính mình
-        try:
-            await context.bot.send_photo(
-                chat_id=admin_id,
-                photo=file_id,
-                caption=f"🔔 YÊU CẦU NẠP USDT MỚI!\n\n"
-                        f"👤 User: {user_id}\n"
-                        f"💵 Số tiền: {usdt_amount} USDT\n"
-                        f"📝 Code: {code}\n\n"
-                        f"Vào Admin → 🔶 Duyệt Binance để xử lý."
-            )
-        except:
-            pass
-    
-    await update.message.reply_text(
-        get_text(lang, "binance_submitted").format(amount=usdt_amount, code=code),
-        reply_markup=await get_user_keyboard(lang)
-    )
-    
-    context.user_data.pop('binance_deposit_code', None)
-    context.user_data.pop('binance_usdt', None)
-    context.user_data.pop('binance_vnd', None)
-    
-    return ConversationHandler.END
 
 # ============ RÚT USDT ============
 
