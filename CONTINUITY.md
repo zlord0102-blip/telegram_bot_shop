@@ -1,5 +1,16 @@
 Goal: Improve Admin Dashboard and sales operations, including dynamic pricing/promotions, support-contact UX, and configurable product list pagination:
 
+- Current scope add-on (latest request): fix local Windows shell Python alias resolution for the current user account:
+  - `python` / `python3` currently resolve to Windows Store aliases under `WindowsApps`.
+  - Need to prepend the real Python 3.13 install directories to `HKCU` `Path` so new shells resolve to the actual interpreter.
+  - Do not modify `System PATH` and do not disable App Execution Alias; only change `User PATH` ordering.
+- Current scope add-on (latest request): optimize Telegram bot/admin wording and purchase UX without changing business logic:
+  - add quick quantity buttons (`1/3/5/10/Nhập tay`) after payment-method selection
+  - keep users inside the same purchase context when quantity input is invalid or exceeds max
+  - polish Vietnamese shop/history/menu text for clarity
+  - make history list labels easier to scan
+  - update bot direct-payment/admin direct-order wording to match queued/auto-delivery behavior
+- Current scope add-on (latest request): review current Telegram bot text/icon aesthetics and suggest cleanup improvements without changing business logic.
 - Completed scope: Dashboard/Stocks/Users enhancements, chat, direct-order timeout, reports cards, stock counters.
 - New scope: Quantity-tier pricing + Buy X Get Y promotions configurable from Dashboard and applied in customer purchase flow.
 - Current scope add-on: revert Support button to legacy logic (message + inline links) and allow multiple support contacts (Telegram/Facebook/Zalo...) from Dashboard settings.
@@ -2024,6 +2035,433 @@ Validation:
       - temporary Telegram failure -> pending retry
       - terminal Telegram failure -> failed with visible error
       - admin retry route resends without touching stock/order state.
+- Done:
+  - Verified local Python installation details for the Windows alias-fix task:
+    - `py --version` reports `Python 3.13.12`
+    - `py -0p` points to `C:\Users\opc\AppData\Local\Programs\Python\Python313\python.exe`
+    - `python` / `python3` currently resolve to `WindowsApps` aliases instead of the real interpreter.
+    - `C:\Users\opc\AppData\Local\Programs\Python\Python313\` contains `python.exe` and `pythonw.exe`, but does **not** contain `python3.exe`.
+  - Applied the Windows user-level Python alias fix:
+    - updated `HKCU:\Environment\Path` to prepend:
+      - `C:\Users\opc\AppData\Local\Programs\Python\Python313`
+      - `C:\Users\opc\AppData\Local\Programs\Python\Python313\Scripts`
+    - created shim `C:\Users\opc\AppData\Local\Programs\Python\Launcher\python3.cmd` forwarding to the real `python.exe`
+    - kept `Python Launcher`, `WindowsApps`, and `System PATH` otherwise unchanged
+  - Verified inside the updated process environment after the PATH fix:
+    - `where python` now lists `C:\Users\opc\AppData\Local\Programs\Python\Python313\python.exe` first
+    - `where python3` now lists `C:\Users\opc\AppData\Local\Programs\Python\Launcher\python3.cmd` first
+    - `python --version` -> `Python 3.13.12`
+    - `python3 --version` -> `Python 3.13.12`
+    - `py --version` -> `Python 3.13.12`
+    - `python -c "import sys; print(sys.executable)"` -> `C:\Users\opc\AppData\Local\Programs\Python\Python313\python.exe`
+- Now:
+  - Current operational task is to repair `python` / `python3` command resolution for the current Windows user.
+  - Working assumption: fix only `HKCU:\Environment\Path` by prepending:
+    - `C:\Users\opc\AppData\Local\Programs\Python\Python313\`
+    - `C:\Users\opc\AppData\Local\Programs\Python\Python313\Scripts\`
+    - plus a lightweight user-level shim path for `python3.cmd` because the installed Python directory does not ship `python3.exe`.
+  - Keep `C:\Users\opc\AppData\Local\Programs\Python\Launcher\` in place so `py` still works.
+  - Keep `System PATH` and Windows Store alias settings unchanged.
+  - Immediate next step:
+    - open a fresh shell / restart the current terminal app session so inherited process environment picks up the new `User PATH` automatically.
+    - if any older shell still resolves to `WindowsApps`, close and reopen it instead of changing the registry again.
+- Now:
+  - Resume the repository-grounded optimization review for the Bot Admin Dashboard and Telegram bot.
+  - Current user intent is advisory/prioritization, not a new feature request yet:
+    - continue from the earlier risk review
+    - deepen the highest-impact items with more concrete implementation guidance
+    - keep recommendations grounded in the current code paths instead of generic best practices
+  - Immediate next step:
+    - inspect the riskiest operational paths again (`manual fulfill`, `finance fallback`, `broadcast`, `analytics fallback`, dashboard error handling)
+    - convert the earlier findings into a tighter phased roadmap with clear impact/cost tradeoffs.
+- Done:
+  - Re-validated the highest-risk Bot Dashboard/Bot code paths against current repo state:
+    - `admin_dashboard_telegram_bot/app/api/direct-orders/fulfill/route.ts` still fulfills the order first, then sends Telegram directly, and returns `502` if send fails; it does not enqueue through the bot delivery outbox used by `sepay_checker.py`.
+    - `admin_dashboard_telegram_bot/app/api/_shared/directOrderFulfillment.ts` fallback paths still perform multi-step stock/order/direct-order mutations without a DB transaction, so partial-write risk remains when RPC is unavailable.
+    - `admin_dashboard_telegram_bot/app/api/admin-finance/route.ts` fallback confirm flows still do read-modify-write balance updates followed by status updates, leaving a non-atomic window for deposits/withdrawals/USDT withdrawals.
+    - `admin_dashboard_telegram_bot/app/api/telegram/send/route.ts` still loads the full broadcast candidate set (`users`) and inbound history (`telegram_messages`) before sending, and the HTTP request remains open until the whole batch completes.
+    - `admin_dashboard_telegram_bot/app/api/_shared/adminAnalytics.ts` fallback search/filter/sort still loads all users and hydrates order stats in chunks when RPC is missing.
+    - Dashboard client pages still suppress load failures:
+      - `admin_dashboard_telegram_bot/app/(admin)/page.tsx` uses `load().catch(() => null)`
+      - `admin_dashboard_telegram_bot/app/(admin)/users/page.tsx` falls back to an empty table on fetch failure.
+- Done:
+  - Extended the optimization review to lower-priority but still valuable runtime/maintainability areas:
+    - `run.py` still logs directly to `bot.log` via `logging.FileHandler(...)` with no rotation policy.
+    - `run.py` starts polling with `drop_pending_updates=True`, which keeps restarts clean but can discard queued private/support updates after downtime.
+    - `run.py` launches `run_checker(...)` as an unmanaged background task; the checker loop self-recovers from most processing exceptions, but there is still no explicit health/heartbeat surfaced to admin UI.
+    - `handlers/shop.py` remains very large (`1541` lines) and mixes checkout, direct payment rails, balance purchase, account info, history, and deposit/withdraw UX in one module.
+    - `database/db.py` (`1507` lines) and `database/supabase_db.py` (`2016` lines) still mirror large business-critical surfaces, while `database/__init__.py` switches implementation globally via environment.
+    - Bot purchase-history list in `handlers/shop.py` still hard-limits to 5 recent orders in the menu, even though detail rendering has become richer.
+- Now:
+  - Synthesize the re-validated findings into a practical optimization roadmap for the user.
+  - Keep the guidance focused on:
+    - correctness/reliability first
+    - then operational scalability
+    - then admin UX observability/maintainability.
+- Now:
+  - User has moved from advisory review to implementation.
+  - Current implementation batch will target the previously identified quick wins:
+    - add bot log rotation
+    - expose checker / delivery health signal in dashboard
+    - add pagination / "view more" style navigation for bot purchase history
+  - Working assumption:
+    - implement all three quick-win items now unless a deeper blocker appears
+    - keep changes incremental and compatible with current bot/dashboard architecture.
+- Done:
+  - Implemented bot runtime quick wins:
+    - `run.py` now uses `RotatingFileHandler` for `bot.log` with env-configurable `BOT_LOG_MAX_BYTES` and `BOT_LOG_BACKUP_COUNT`.
+    - `sepay_checker.py` now persists a JSON checker heartbeat/status payload in settings key `bot_checker_health` after each loop, including:
+      - `heartbeatAt`
+      - `lastSuccessAt`
+      - `lastError`
+      - `mode`
+      - `loopState`
+      - `intervalSeconds`
+      - `sleepSeconds`
+      - `lastDurationMs`
+      - `runtime`
+- Done:
+  - Implemented dashboard checker/outbox observability:
+    - extended Bot dashboard analytics snapshot types with `checkerHealth`
+    - dashboard snapshot loader now reads `bot_checker_health` and delivery outbox counts (`pending` / `sending` / `failed`)
+    - dashboard page now renders a checker health card showing freshness, runtime, loop duration, and outbox backlog/failures
+- Done:
+  - Implemented bot purchase-history pagination:
+    - added shared helper `helpers/history_menu.py`
+    - both `handlers/start.py` reply-keyboard history flow and `handlers/shop.py` callback history flow now use the same paginated history menu
+    - history now supports `history_page_<n>` navigation instead of hard-limiting to 5 visible orders forever
+    - `run.py` callback routing now accepts `^history(?:_page_\\d+)?$`
+- Done:
+  - Verification results for this batch:
+    - `admin_dashboard_telegram_bot/node_modules/.bin/tsc --noEmit -p admin_dashboard_telegram_bot/tsconfig.json` passed after checker-health snapshot/UI changes.
+    - Python AST parse check passed for:
+      - `run.py`
+      - `sepay_checker.py`
+      - `handlers/shop.py`
+      - `handlers/start.py`
+      - `helpers/history_menu.py`
+    - Direct `py_compile` still hits local Windows `.pyc` rename permission issues in this environment, so syntax verification used AST parsing instead of bytecode writes.
+- Now:
+  - Quick-win implementation batch is complete in repo.
+  - Next useful follow-up would be one of:
+    - connect manual direct-order fulfill to the same outbox/retry path
+    - hard-fail production finance/order mutations when RPC is missing
+    - move broadcast to a background job model.
+- Now:
+  - User requested to continue the remaining optimization tasks immediately.
+  - Current implementation batch is narrowed to the two highest-risk remaining items:
+    - connect manual direct-order fulfill to the same delivery outbox/retry path already used by the checker
+    - hard-fail unsafe production-side mutation fallbacks when required RPC functions are missing
+  - Working assumption:
+    - defer the larger broadcast background-job refactor until after these correctness/safety fixes
+    - preserve local/dev fallback behavior where possible, but stop silent production mutation fallbacks.
+- Done:
+  - Re-checked the current implementation surfaces before editing:
+    - `admin_dashboard_telegram_bot/app/api/direct-orders/fulfill/route.ts` still sends Telegram directly after fulfill and only returns a plain success/error response; admin UI does not depend on any richer response payload yet.
+    - `sepay_checker.py` already defines the canonical outbox payload shape and retry processing flow; the Next.js admin route currently has no equivalent worker-side sender and should enqueue for checker processing instead of pretending to send synchronously.
+    - `supabase_schema_bot_delivery_outbox.sql` confirms admin sessions can read/write `bot_delivery_outbox`, so manual fulfill can enqueue rows with the existing table/RLS surface.
+    - `admin_dashboard_telegram_bot/app/api/admin-finance/route.ts` and `admin_dashboard_telegram_bot/app/api/_shared/directOrderFulfillment.ts` still silently drop to unsafe mutation fallbacks when RPCs are missing.
+- Now:
+  - Implementation approach for the current batch is fixed:
+    - add shared admin-side helper(s) for `bot_delivery_outbox` enqueue/payload building
+    - change manual bot fulfill to enqueue/reset the outbox row and return success as `queued for delivery`, not direct-send
+    - gate missing-RPC fallbacks behind a production-aware policy so production-like envs fail closed unless an explicit override is set
+  - Current assumption:
+    - queued delivery is acceptable for manual fulfill because checker/outbox is the durable sender of record
+    - if the outbox table is unavailable in a production-like env, manual fulfill should fail before mutating order state rather than confirm an order without a delivery path.
+- Done:
+  - Implemented the current hardening batch in `admin_dashboard_telegram_bot`:
+    - added shared helper `app/api/_shared/mutationFallback.ts` for production-aware unsafe-fallback policy + missing-RPC messaging
+    - added shared helper `app/api/_shared/botDeliveryOutbox.ts` for canonical bot delivery payload building and `bot_delivery_outbox` enqueue/reset
+    - `app/api/_shared/directOrderFulfillment.ts` now throws `503` instead of silently falling back when `fulfill_bot_direct_order` / `fulfill_website_direct_order` RPCs are missing in production-like envs
+    - `app/api/admin-finance/route.ts` now returns `503` instead of silently falling back when required finance RPCs are missing in production-like envs
+    - `app/api/direct-orders/fulfill/route.ts` now:
+      - preflights `bot_delivery_outbox`
+      - blocks manual fulfill in production-like envs if the outbox table is unavailable
+      - enqueues/resets the outbox row and returns `delivery.status = queued`
+      - sends relay notification only after the primary delivery path (queued outbox or direct-send fallback) is in place
+      - keeps the old direct-send path only as a non-production unsafe fallback when outbox is unavailable
+    - `app/(admin)/direct-orders/page.tsx` now tells admin the order was queued for bot delivery instead of implying immediate send
+- Done:
+  - Verification for the current hardening batch:
+    - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc --noEmit -p tsconfig.json` passed after the outbox enqueue + mutation-fallback policy changes
+- Now:
+  - Current remaining major optimization item after this batch is the broadcast refactor:
+    - move broadcast off long-lived request/scan flow into a background job model with recipient snapshot + progress reporting
+  - Immediate next step, if continuing implementation:
+    - design and wire the broadcast job persistence/API/UI path without regressing current Users-page sending UX.
+- Done:
+  - Implemented the broadcast background-job refactor in `admin_dashboard_telegram_bot`:
+    - added shared worker/helper `app/api/_shared/telegramBroadcastJobs.ts` for:
+      - recipient snapshot computation
+      - durable job/target persistence
+      - detached in-process worker launch
+      - job status aggregation / stale-job resume
+    - added new SQL bootstrap file `supabase_schema_telegram_broadcast_jobs.sql` with:
+      - `telegram_broadcast_jobs`
+      - `telegram_broadcast_job_targets`
+      - indexes, triggers, and admin RLS policies
+    - `app/api/telegram/send/route.ts` now:
+      - creates a broadcast job and returns immediately when SQL + service-role worker infra is available
+      - falls back to the old inline send path only in unsafe/dev-compatible mode
+      - fails closed with `503` in production-like envs when the required job infra is missing
+    - added status route `app/api/telegram/broadcast-jobs/[id]/route.ts`
+    - `app/(admin)/users/page.tsx` now:
+      - shows queued/running/completed job progress
+      - polls the job status route while the broadcast is active
+      - disables repeat broadcast submission while a job is already running
+- Done:
+  - Added clearer admin error states:
+    - `app/(admin)/page.tsx` now shows a visible dashboard load error card with retry button instead of silently swallowing failure
+    - `app/(admin)/users/page.tsx` now shows a visible user-list load error with retry button instead of only collapsing to an empty table
+- Done:
+  - Verification for the broadcast + admin-error-state batch:
+    - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc --noEmit -p tsconfig.json` passed after:
+      - broadcast job helpers/routes/UI polling
+      - dashboard/users error-banner retry states
+- Now:
+  - Current optimization roadmap items from the earlier high-priority list are implemented in repo:
+    - manual fulfill -> delivery outbox/retry path
+    - production fail-closed for missing critical RPCs
+    - broadcast -> background job + progress polling
+    - visible dashboard/users load error states
+  - Immediate next step outside code:
+    - apply `supabase_schema_bot_delivery_outbox.sql` and `supabase_schema_telegram_broadcast_jobs.sql` in Supabase
+    - ensure `SUPABASE_SERVICE_ROLE_KEY` is configured for `admin_dashboard_telegram_bot`
+    - test one real broadcast job end-to-end and confirm polling/progress/completion in the Users page.
+- Done:
+  - Re-checked the current affected surfaces:
+    - the checker-status card still renders in `admin_dashboard_telegram_bot/app/(admin)/page.tsx`
+    - the reported traceback maps to `handlers/shop.py:988` inside `show_shop(...)`
+    - `run.py` currently registers `show_shop` for `^shop(?:_\\d+)?$`, so tapping a no-op pagination/control callback can still hit the same edit path
+- Done:
+  - Implemented the follow-up cleanup/fix batch requested by the user:
+    - removed the Bot dashboard checker-status card UI from `admin_dashboard_telegram_bot/app/(admin)/page.tsx`
+    - kept backend checker-health/outbox telemetry intact; only the admin card UI was removed
+    - hardened `handlers/shop.py::show_shop` by catching Telegram `BadRequest` only for the no-op case `Message is not modified`, so tapping refresh/current-page shop callbacks no longer logs an unhandled exception
+- Done:
+  - Verification results for the cleanup/fix batch:
+    - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc --noEmit -p tsconfig.json` passed after removing the checker card UI/state
+    - `py -3` AST parse check passed for `handlers/shop.py`
+- Now:
+  - The requested cleanup/fix batch is complete in repo:
+    - checker-status UI card removed from the Bot admin dashboard
+    - `show_shop` no longer surfaces the noisy `Message is not modified` exception for no-op edits
+  - Immediate next useful step:
+    - verify the shop menu manually in Telegram once to confirm pressing refresh/current-page buttons is now silent and UX still feels correct
+- Now:
+  - User has reported a fresh regression in Bot Dashboard manual direct-order fulfill:
+    - `POST /api/direct-orders/fulfill` is still returning `502` in the admin dashboard
+    - repeated retry can then return `409`
+    - admin UI still shows `Failed to send message.`
+  - Immediate next step:
+    - inspect `app/api/direct-orders/fulfill/route.ts`, shared outbox helper(s), and the direct-orders admin page submit/error handling to confirm exactly which post-fulfill branch still throws `502`
+- Done:
+  - Latest user-provided runtime evidence for the regression:
+    - Next.js dev server logs show:
+      - `POST /api/direct-orders/fulfill 502`
+      - retry followed by `POST /api/direct-orders/fulfill 409`
+    - admin page screenshot shows a pending direct order row and frontend error text `Failed to send message.`
+- Done:
+  - Confirmed root cause of the `502 -> 409` regression:
+    - `app/api/direct-orders/fulfill/route.ts` was still allowing an unsafe manual-fulfill fallback when `bot_delivery_outbox` was unavailable
+    - in that fallback, the route fulfilled/mutated the order first, then tried to send Telegram directly
+    - when the direct Telegram send failed, the route returned `502 "Failed to send message."`
+    - retrying the same order then hit the already-processed state and returned `409`
+- Done:
+  - Implemented the regression fix for manual direct-order fulfill:
+    - `app/api/direct-orders/fulfill/route.ts` now requires `bot_delivery_outbox` readiness before any fulfillment mutation
+    - removed the unsafe direct-send fallback path entirely from manual fulfill
+    - manual fulfill now either:
+      - returns `503` immediately with an actionable migration message if `bot_delivery_outbox` is unavailable, or
+      - fulfills the order and queues delivery via outbox, returning `delivery.status = queued`
+    - `app/(admin)/direct-orders/page.tsx` now treats `409` more gracefully by reloading the table and surfacing a clearer “already handled” style message instead of leaving stale pending rows on screen
+- Done:
+  - Verification results for the manual-fulfill regression fix:
+    - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc --noEmit -p tsconfig.json` passed after removing the unsafe manual direct-send fallback and updating the direct-orders page conflict handling
+- Done:
+  - Implemented the Telegram bot/admin UX polish batch requested after the system was running again:
+    - `handlers/shop.py` now supports quick quantity buttons after payment-method selection:
+      - inline quantity choices `1 / 3 / 5 / 10`
+      - `Nhập tay` callback that keeps the user in the same purchase context
+      - quantity validation errors now re-render the same purchase prompt instead of dropping back to the normal keyboard
+    - `run.py` now routes reply-keyboard text for the renamed Vietnamese buttons:
+      - `🛒 Mua hàng`
+      - `📜 Lịch sử mua`
+      - it also lets `handle_buy_quantity` receive non-numeric text while a buy flow is active so invalid input gets a guided retry message
+    - `helpers/history_menu.py` now renders more readable history rows:
+      - longer product-name preview
+      - `#{order_id} {name} x{qty} • {amount}` formatting
+      - page label no longer repeats in both header and footer
+    - `locales/vi.py` / `locales/en.py` received clearer shop/history/quantity wording; Vietnamese `max_quantity` now correctly interpolates `{max}`
+    - `keyboards/inline.py` now shows the updated Vietnamese reply-keyboard labels and matching inline main-menu wording
+    - `handlers/shop.py` direct-payment confirmation copy now states:
+      - order created successfully
+      - amount
+      - payment code
+      - no need to contact admin because auto-delivery will handle fulfillment
+    - `admin_dashboard_telegram_bot/app/(admin)/direct-orders/page.tsx` now uses queued-delivery wording in both confirm dialog and success status
+- Done:
+  - Verification results for the UX/text polish batch:
+    - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc --noEmit -p .\\admin_dashboard_telegram_bot\\tsconfig.json` passed
+    - `py -3` AST parse passed for:
+      - `handlers/shop.py`
+      - `helpers/history_menu.py`
+      - `keyboards/inline.py`
+      - `locales/vi.py`
+      - `locales/en.py`
+      - `run.py`
+    - note: Python parse needed `utf-8-sig` because some files already carry a BOM; this was an environment/parsing detail, not a repo syntax bug
+- Done:
+  - Follow-up UX fix for the new manual quantity button:
+    - user reported `Nhập tay` felt like it did nothing when clicked
+    - `handlers/shop.py` now makes the manual-entry transition obvious:
+      - callback answer shows a short prompt (`Hãy nhập số lượng vào chat`)
+      - message text explicitly says the bot is waiting for the quantity message
+      - inline keyboard switches from quick quantity buttons to a `Chọn nhanh lại` button plus `Xóa`
+    - `run.py` now registers `buyqtyquick_(vnd|usdt)_<productId>` so users can switch back to quick-select mode after entering manual mode
+- Done:
+  - Verification results for the manual-entry UX follow-up:
+    - `py -3` AST parse passed for:
+      - `handlers/shop.py`
+      - `run.py`
+- Now:
+  - User is satisfied with runtime behavior but feels current text/icon styling still looks unattractive.
+  - Repo-grounded review findings:
+    - visual language is inconsistent across bot surfaces:
+      - `locales/vi.py` still mixes old all-caps blocks with newer sentence-case prompts
+      - `keyboards/inline.py` mixes icon-bearing and icon-less button labels, plus several legacy leading spaces in button text
+      - `helpers/purchase_messages.py` uses different terminology/icons (`🧾 Loại hàng`, `🔐 Account`) than the rest of the bot (`📦 Sản phẩm`, payment/status copy)
+      - `handlers/shop.py` still contains several long, dense hard-coded payment/prompt texts separate from locale strings, which increases drift and stylistic inconsistency
+      - product-list button labels still use utilitarian `name | price | stock` formatting that feels admin-like rather than storefront-like
+- Done:
+  - User agreed to implement the visual/text cleanup recommendations instead of only reviewing them.
+  - Implemented the first half of the visual cleanup batch:
+    - `locales/vi.py` and `locales/en.py` now use calmer sentence-case copy for welcome/shop/history/deposit/withdraw prompts
+    - `helpers/purchase_messages.py` now uses consistent terminology/icons (`📦 Sản phẩm/Product`, `📝 Ghi chú/Note`, `📦 Dữ liệu nhận/Delivered data`)
+    - `keyboards/inline.py` now uses cleaner main-menu labels and storefront-style product rows (`📦 {name} • {price}` / sold-out variant) instead of the old utilitarian product formatting
+- Done:
+  - Finished the second half of the visual cleanup batch in `handlers/shop.py`:
+    - softened hard-coded checkout/payment prompts into sentence-case wording
+    - standardized semantic icon usage across payment, quantity, history, account, deposit, and USDT-withdraw messages
+    - cleaned VietQR/Binance/MoMo payment captions so they read like customer-facing instructions instead of debug/admin text
+    - improved pricing-rule bullets (`• Từ ...`) and payment-method button labels (`Ví VNĐ`, `VNĐ / chuyển khoản`, `Ví USDT`)
+    - refreshed deposit/account/history/order-detail copy to remove unnecessary all-caps and abbreviated labels
+  - Additional small locale cleanup:
+    - `locales/en.py` deposit button icon now matches the rest of the payment surfaces (`💰 Deposit`)
+- Done:
+  - Verification results for the visual cleanup batch:
+    - `py -3` AST parse passed for:
+      - `handlers/shop.py`
+      - `keyboards/inline.py`
+      - `helpers/purchase_messages.py`
+      - `locales/vi.py`
+      - `locales/en.py`
+- Now:
+  - The requested text/icon cleanup batch is complete in repo.
+  - Immediate next useful step:
+    - user-side live review in Telegram to spot any wording that still feels too long or too formal after seeing the new copy on real messages/buttons
+- Done:
+  - User provided live Telegram screenshots and narrowed the desired copy/style rollback:
+    - keep the outer shop-list intro text in its old style
+    - keep the product-detail block layout closer to the old multiline formatting
+    - change the direct-payment button label back to `Thanh toán trực tiếp`
+- Now:
+  - Current task is a targeted wording rollback, not another broad polish pass.
+  - Immediate next step:
+    - update the affected fallback/localized intro text and the product-detail/payment-button copy, then re-run Python syntax verification
+- Done:
+  - Implemented the targeted copy rollback requested from the live Telegram screenshots:
+    - `locales/vi.py` fallback shop intro text now uses the old style `🛍️ Chọn sản phẩm để mua:`
+    - `handlers/shop.py` quantity-pricing lines now render with the old indented multiline feel in the product-detail block
+    - `handlers/shop.py` direct-payment button text was changed back to `Thanh toán trực tiếp`
+- Done:
+  - User clarified that the real remaining issue is the inline product-button label format, not the intro text.
+  - Desired rollback target from screenshot:
+    - restore product list buttons to the legacy `Tên | Giá | trạng thái/tồn kho` format
+    - keep the current outer intro text as-is
+- Done:
+  - Verification for the targeted rollback:
+    - `py -3` AST parse passed for:
+      - `handlers/shop.py`
+      - `locales/vi.py`
+- Now:
+  - The screenshot-driven rollback still has one remaining UI detail:
+    - `keyboards/inline.py` product rows need to return to the old `|`-separated inline label style
+  - Immediate next useful step:
+    - restore the legacy inline product-button formatter, then rerun Python syntax verification
+- Done:
+  - Restored the legacy inline product-button label style in `keyboards/inline.py`:
+    - Vietnamese product rows now render as `Tên | Giá | 📦 stock` or `Tên | Giá | ❌ Hết`
+    - outer intro text was left unchanged, matching the user's clarification
+- Done:
+  - Verification for the inline-button rollback:
+    - `py -3` AST parse passed for:
+      - `keyboards/inline.py`
+- Now:
+  - User has now provided the next Telegram UI polish tweaks after seeing the rollback live:
+    - remove the extra blank line below `📉 Giá theo số lượng:`
+    - rename the direct-payment button text from `VietQR` to `Ngân hàng`
+    - make the bot reply keyboard reopen/show more reliably when the chat input is empty (matching the screenshot expectation for the bottom buttons)
+  - Immediate next step:
+    - apply those three targeted Telegram UI tweaks and rerun Python syntax verification
+- Done:
+  - Implemented the next Telegram UI polish tweaks:
+    - `handlers/shop.py` no longer inserts a blank spacer line under `📉 Giá theo số lượng:`
+    - `handlers/shop.py` direct checkout button text now shows `🏦 Ngân hàng` instead of `VietQR`
+    - `keyboards/inline.py` now returns the main/admin reply keyboards with `is_persistent=True` and `one_time_keyboard=False` so Telegram keeps the bottom bot buttons opened more reliably when the input is empty
+- Done:
+  - Verification for this Telegram UI tweak batch:
+    - `py -3` AST parse passed for:
+      - `handlers/shop.py`
+      - `keyboards/inline.py`
+- Now:
+  - The requested three Telegram UI tweaks are complete in repo.
+  - Immediate next useful step:
+    - restart or reload the bot client/process and verify the product-detail card, bank button label, and persistent bottom reply-keyboard behavior in Telegram
+- Done:
+  - User reported the bottom reply keyboard still does not auto-show again when the input is empty.
+  - Repo-grounded follow-up finding:
+    - although the main reply keyboard was switched to `is_persistent=True`, several deposit/withdraw conversation flows in `handlers/shop.py` were still sending plain `ReplyKeyboardMarkup(..., resize_keyboard=True)` without persistent flags, which could weaken the client-side keyboard behavior after those flows
+  - Additional implementation note:
+    - local PTB docs confirm `is_persistent` only *requests* the Telegram client to keep showing the keyboard, so final auto-open behavior is still partly client-controlled
+- Now:
+  - Current best-effort fix is to make all reply keyboards in bot flows consistently persistent, not just the main menu keyboard.
+  - Immediate next step:
+    - harden all direct `ReplyKeyboardMarkup` usages in `handlers/shop.py` to use the same persistent settings, then re-run syntax verification
+- Done:
+  - Applied the best-effort reply-keyboard persistence hardening:
+    - added helper `persistent_reply_keyboard(...)` in `handlers/shop.py`
+    - deposit/withdraw conversation keyboards in `handlers/shop.py` now also use `one_time_keyboard=False` + `is_persistent=True`
+    - added `input_field_placeholder` hints to the main/admin reply keyboards in `keyboards/inline.py`
+- Done:
+  - Verification for the reply-keyboard persistence hardening:
+    - `py -3` AST parse passed for:
+      - `handlers/shop.py`
+      - `keyboards/inline.py`
+- Now:
+  - Repo now uses the strongest reply-keyboard persistence settings consistently across the bot flows that were previously mixed.
+  - Important current limitation:
+    - local PTB docs confirm `is_persistent` only *requests* Telegram clients to keep showing the keyboard, so exact auto-open behavior when the input is empty remains partly controlled by the Telegram client itself
+  - Immediate next useful step:
+    - restart/reload the bot and verify on the target Telegram client; if it still refuses to auto-open, treat that remaining behavior as a client limitation rather than a missing bot-side flag
+- Done:
+  - Confirmed the deeper platform limitation behind the remaining complaint:
+    - Telegram bots do not receive draft/input-field change events such as “user deleted all text and the input became empty”
+    - therefore the bot cannot detect that moment and cannot programmatically trigger a fresh reply-keyboard send exactly when the input becomes empty
+    - combined with Telegram's own docs for `is_persistent`, this means the remaining behavior is client-controlled rather than a missing repo-side flag
+- Now:
+  - No further exact fix exists in bot code for the requested behavior “when input becomes empty, auto-show the reply keyboard again”.
+  - Immediate next useful step:
+    - if the user wants a workaround, offer a manual recovery affordance such as a `Mở menu` / `Hiện menu` button or command that re-sends the persistent reply keyboard on demand
+- Done:
+  - User has explicitly asked for a stronger requirement:
+    - make the Telegram reply keyboard impossible to hide at all
+- Now:
+  - Current task is to answer that stricter requirement accurately using the official Telegram Bot API behavior.
+  - Important conclusion:
+    - the Bot API does not provide a server-side switch to make `ReplyKeyboardMarkup` permanently unhideable
+    - `is_persistent` is only a request to the client, not an enforceable lock
 
 Open Questions:
 

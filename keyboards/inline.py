@@ -9,6 +9,30 @@ def _format_vnd_dot(amount) -> str:
         value = 0
     return f"{value:,}".replace(",", ".")
 
+
+def _clip_button_text(text: str, limit: int = 28) -> str:
+    cleaned = str(text or "").strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return f"{cleaned[:limit - 1].rstrip()}…"
+
+
+def _build_product_button_label(product: dict, lang: str = "vi") -> str:
+    stock = int(product.get("stock") or 0)
+    name_text = _clip_button_text(product.get("name") or "", limit=40)
+
+    if lang == "en":
+        if product.get("price_usdt") and product["price_usdt"] > 0:
+            price_text = f"{product['price_usdt']} USDT"
+        else:
+            price_text = "N/A"
+        status_text = "❌ Sold out" if stock <= 0 else f"📦 {stock}"
+        return f"{name_text} | {price_text} | {status_text}"
+
+    price_text = f"{_format_vnd_dot(product.get('price'))} đ"
+    status_text = "❌ Hết" if stock <= 0 else f"📦 {stock}"
+    return f"{name_text} | {price_text} | {status_text}"
+
 def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None):
     flags = flags or {}
     def enabled(key: str, default: bool = True) -> bool:
@@ -43,11 +67,12 @@ def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None):
         if enabled("show_language"):
             buttons.append("🌐 Language")
         keyboard = build_rows(buttons)
+        placeholder = "Choose an option below"
     else:
         # Vietnamese: no legacy Binance deposit button in reply keyboard; checkout offers direct rails when needed.
         buttons: list[str | KeyboardButton] = []
         if enabled("show_shop"):
-            buttons.append("🛒 Danh mục")
+            buttons.append("🛒 Mua hàng")
         if enabled("show_balance"):
             buttons.append("💰 Số dư")
         if enabled("show_deposit"):
@@ -55,13 +80,20 @@ def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None):
         if enabled("show_withdraw"):
             buttons.append("💸 Rút tiền")
         if enabled("show_history"):
-            buttons.append("📜 Lịch sử")
+            buttons.append("📜 Lịch sử mua")
         if enabled("show_support"):
             buttons.append("💬 Hỗ trợ")
         if enabled("show_language"):
             buttons.append("🌐 Ngôn ngữ")
         keyboard = build_rows(buttons)
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        placeholder = "Chọn một nút bên dưới"
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+        input_field_placeholder=placeholder,
+    )
 
 def admin_reply_keyboard():
     keyboard = [
@@ -70,14 +102,20 @@ def admin_reply_keyboard():
         [KeyboardButton("✅ Duyệt giao dịch"), KeyboardButton("🏦 Cài đặt NH")],
         [KeyboardButton("🚪 Thoát Admin")],
     ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard,
+        resize_keyboard=True,
+        one_time_keyboard=False,
+        is_persistent=True,
+        input_field_placeholder="Chọn một nút bên dưới",
+    )
 
 def main_menu_keyboard():
     keyboard = [
-        [InlineKeyboardButton(" Mua hàng", callback_data="shop")],
-        [InlineKeyboardButton(" Nạp tiền", callback_data="deposit")],
-        [InlineKeyboardButton(" Tài khoản", callback_data="account")],
-        [InlineKeyboardButton(" Lịch sử mua", callback_data="history")],
+        [InlineKeyboardButton("🛒 Mua hàng", callback_data="shop")],
+        [InlineKeyboardButton("💰 Nạp tiền", callback_data="deposit")],
+        [InlineKeyboardButton("👤 Tài khoản", callback_data="account")],
+        [InlineKeyboardButton("📜 Đơn đã mua", callback_data="history")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -113,19 +151,7 @@ def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int 
     page_products = (products or [])[start:end]
 
     for p in page_products:
-        if lang == 'en':
-            # English: show USDT price only
-            stock_text = f"📦 {p['stock']}" if p['stock'] > 0 else "❌ out"
-            if p.get('price_usdt') and p['price_usdt'] > 0:
-                price_text = f"{p['price_usdt']} USDT"
-            else:
-                price_text = "N/A"
-            label = f"{p['name']} | {price_text} | {stock_text}"
-        else:
-            # Vietnamese: show VND price (USDT option available when buying)
-            stock_text = f"📦 {p['stock']}" if p['stock'] > 0 else "❌ Hết"
-            price_text = f"{_format_vnd_dot(p.get('price'))} đ"
-            label = f"{p['name']} | {price_text} | {stock_text}"
+        label = _build_product_button_label(p, lang=lang)
         keyboard.append([InlineKeyboardButton(label, callback_data=f"buy_{p['id']}")])
 
     if total_pages > 1:
@@ -146,7 +172,7 @@ def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int 
     return InlineKeyboardMarkup(keyboard)
 
 def confirm_buy_keyboard(product_id, stock=1, max_can_buy=1):
-    keyboard = [[InlineKeyboardButton(" Hủy", callback_data="shop")]]
+    keyboard = [[InlineKeyboardButton("❌ Hủy", callback_data="shop")]]
     return InlineKeyboardMarkup(keyboard)
 
 def deposit_amounts_keyboard():
@@ -161,7 +187,7 @@ def deposit_amounts_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 def back_keyboard(callback_data="back_main"):
-    return InlineKeyboardMarkup([[InlineKeyboardButton(" Quay lại", callback_data=callback_data)]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data=callback_data)]])
 
 def delete_keyboard():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Xóa", callback_data="delete_msg")]])
@@ -181,14 +207,14 @@ def admin_stock_keyboard(products):
     keyboard = []
     for p in products:
         keyboard.append([InlineKeyboardButton(f"{p['name']} (còn {p['stock']})", callback_data=f"admin_stock_{p['id']}")])
-    keyboard.append([InlineKeyboardButton(" Quay lại", callback_data="admin")])
+    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
 def admin_view_stock_keyboard(products):
     keyboard = []
     for p in products:
-        keyboard.append([InlineKeyboardButton(f" {p['name']} ({p['stock']} stock)", callback_data=f"admin_viewstock_{p['id']}")])
-    keyboard.append([InlineKeyboardButton(" Quay lại", callback_data="admin")])
+        keyboard.append([InlineKeyboardButton(f"📦 {p['name']} ({p['stock']} stock)", callback_data=f"admin_viewstock_{p['id']}")])
+    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
 def admin_stock_list_keyboard(stocks, product_id, page=0, per_page=10):
@@ -203,19 +229,19 @@ def admin_stock_list_keyboard(stocks, product_id, page=0, per_page=10):
         keyboard.append([InlineKeyboardButton(f"{status} {short_content}", callback_data=f"admin_stockdetail_{stock_id}")])
     nav_row = []
     if page > 0:
-        nav_row.append(InlineKeyboardButton(" Trước", callback_data=f"admin_stockpage_{product_id}_{page-1}"))
+        nav_row.append(InlineKeyboardButton("⬅️ Trước", callback_data=f"admin_stockpage_{product_id}_{page-1}"))
     if end < len(stocks):
-        nav_row.append(InlineKeyboardButton("Sau ", callback_data=f"admin_stockpage_{product_id}_{page+1}"))
+        nav_row.append(InlineKeyboardButton("Sau ➡️", callback_data=f"admin_stockpage_{product_id}_{page+1}"))
     if nav_row:
         keyboard.append(nav_row)
-    keyboard.append([InlineKeyboardButton(" Quay lại", callback_data="admin_manage_stock")])
+    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin_manage_stock")])
     return InlineKeyboardMarkup(keyboard)
 
 def admin_stock_detail_keyboard(stock_id, product_id):
     keyboard = [
-        [InlineKeyboardButton(" Sửa nội dung", callback_data=f"admin_editstock_{stock_id}")],
-        [InlineKeyboardButton(" Xóa stock", callback_data=f"admin_delstock_{stock_id}_{product_id}")],
-        [InlineKeyboardButton(" Quay lại", callback_data=f"admin_viewstock_{product_id}")],
+        [InlineKeyboardButton("✏️ Sửa nội dung", callback_data=f"admin_editstock_{stock_id}")],
+        [InlineKeyboardButton("🗑 Xóa stock", callback_data=f"admin_delstock_{stock_id}_{product_id}")],
+        [InlineKeyboardButton("🔙 Quay lại", callback_data=f"admin_viewstock_{product_id}")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -223,17 +249,17 @@ def pending_deposits_keyboard(deposits):
     keyboard = []
     for d in deposits:
         keyboard.append([
-            InlineKeyboardButton(f" #{d[0]} - {d[2]:,}đ", callback_data=f"admin_confirm_{d[0]}"),
+            InlineKeyboardButton(f"💰 #{d[0]} - {d[2]:,}đ", callback_data=f"admin_confirm_{d[0]}"),
             InlineKeyboardButton("", callback_data=f"admin_cancel_{d[0]}")
         ])
-    keyboard.append([InlineKeyboardButton(" Quay lại", callback_data="admin")])
+    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
 def pending_withdrawals_keyboard(withdrawals):
     keyboard = []
     for w in withdrawals:
-        keyboard.append([InlineKeyboardButton(f" #{w[0]} - {w[2]:,}đ", callback_data=f"admin_view_{w[0]}")])
-    keyboard.append([InlineKeyboardButton(" Quay lại", callback_data="admin")])
+        keyboard.append([InlineKeyboardButton(f"💸 #{w[0]} - {w[2]:,}đ", callback_data=f"admin_view_{w[0]}")])
+    keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
 

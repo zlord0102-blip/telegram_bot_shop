@@ -3,24 +3,24 @@ from helpers.formatting import format_stock_items
 
 _PURCHASE_COPY = {
     "vi": {
-        "success_title": "✅ Thanh toán thành công!",
-        "product": "🧾 Loại hàng",
-        "quantity": "📦 Số lượng",
-        "total": "💰 Tổng",
+        "success_title": "✅ Mua hàng thành công",
+        "product": "📦 Sản phẩm",
+        "quantity": "🔢 Số lượng",
+        "total": "💰 Tổng thanh toán",
         "bonus": "🎁 Tặng thêm",
         "balance": "💳 Số dư còn lại",
-        "description": "📝 Mô tả",
-        "account": "🔐 Account",
+        "description": "📝 Ghi chú",
+        "account": "📦 Dữ liệu nhận",
     },
     "en": {
-        "success_title": "✅ Payment successful!",
-        "product": "🧾 Item",
-        "quantity": "📦 Quantity",
-        "total": "💰 Total",
+        "success_title": "✅ Purchase successful",
+        "product": "📦 Product",
+        "quantity": "🔢 Quantity",
+        "total": "💰 Total paid",
         "bonus": "🎁 Bonus",
         "balance": "💳 Remaining balance",
-        "description": "📝 Description",
-        "account": "🔐 Account",
+        "description": "📝 Note",
+        "account": "📦 Delivered data",
     },
 }
 

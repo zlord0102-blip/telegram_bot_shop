@@ -2,6 +2,7 @@ import asyncio
 import os
 import sys
 import logging
+from logging.handlers import RotatingFileHandler
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ConversationHandler, MessageHandler, filters
@@ -26,6 +27,7 @@ from handlers.shop import (
     handle_withdraw_text, process_withdraw_amount, process_withdraw_bank, process_withdraw_account,
     handle_buy_quantity, show_order_detail,
     select_payment_vnd, select_payment_usdt,
+    select_quick_quantity, prompt_manual_quantity, prompt_quick_quantity,
     select_direct_payment_vietqr, select_direct_payment_binance,
     WAITING_DEPOSIT_AMOUNT, WAITING_WITHDRAW_AMOUNT, WAITING_WITHDRAW_BANK, WAITING_WITHDRAW_ACCOUNT
 )
@@ -52,13 +54,29 @@ from handlers.admin import (
 )
 from sepay_checker import run_checker, init_checker_db
 
+def _env_positive_int(name: str, default: int) -> int:
+    raw_value = os.getenv(name, str(default))
+    try:
+        return max(1, int(str(raw_value).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+LOG_FILE_MAX_BYTES = _env_positive_int("BOT_LOG_MAX_BYTES", 5 * 1024 * 1024)
+LOG_FILE_BACKUP_COUNT = _env_positive_int("BOT_LOG_BACKUP_COUNT", 7)
+
 # Setup logging
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler('bot.log', encoding='utf-8')
+        RotatingFileHandler(
+            'bot.log',
+            maxBytes=LOG_FILE_MAX_BYTES,
+            backupCount=LOG_FILE_BACKUP_COUNT,
+            encoding='utf-8'
+        )
     ]
 )
 logger = logging.getLogger(__name__)
@@ -268,14 +286,11 @@ def setup_bot():
     app.add_handler(admin_contact_conv)
     
     # Reply keyboard handlers (user) - support both languages
-    app.add_handler(MessageHandler(filters.Regex("^(📜 Lịch sử|📜 History)$"), handle_history_text))
+    app.add_handler(MessageHandler(filters.Regex("^(📜 Lịch sử mua|📜 Lịch sử|📜 History)$"), handle_history_text))
     app.add_handler(MessageHandler(filters.Regex("^(💰 Số dư|💰 Balance)$"), handle_balance))
-    app.add_handler(MessageHandler(filters.Regex("^(🛒 Danh mục|🛒 Shop)$"), handle_shop_text))
+    app.add_handler(MessageHandler(filters.Regex("^(🛒 Mua hàng|🛒 Danh mục|🛒 Shop)$"), handle_shop_text))
     app.add_handler(MessageHandler(filters.Regex("^(💬 Hỗ trợ|💬 Support|🆘 Hỗ trợ|🆘 Support)$"), handle_support_text))
     app.add_handler(MessageHandler(filters.Regex("^(🌐 Ngôn ngữ|🌐 Language)$"), handle_change_language))
-    
-    # Handler nhập số lượng mua (chỉ số)
-    app.add_handler(MessageHandler(filters.Regex("^\\d+$"), handle_buy_quantity))
     
     # Admin reply keyboard handlers
     app.add_handler(MessageHandler(filters.Regex("^📦 Quản lý SP$"), handle_admin_products_text))
@@ -285,6 +300,9 @@ def setup_bot():
     app.add_handler(MessageHandler(filters.Regex("^✅ Duyệt giao dịch$"), handle_admin_transactions_text))
     app.add_handler(MessageHandler(filters.Regex("^🏦 Cài đặt NH$"), handle_admin_bank_text))
     app.add_handler(MessageHandler(filters.Regex("^🚪 Thoát Admin$"), handle_exit_admin))
+
+    # Handler nhập số lượng mua: nhận cả số hợp lệ lẫn text sai để bot có thể nhắc lại trong cùng flow
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buy_quantity))
     
     # User callbacks
     app.add_handler(CallbackQueryHandler(set_language, pattern="^set_lang_(vi|en)$"))
@@ -294,10 +312,13 @@ def setup_bot():
     app.add_handler(CallbackQueryHandler(show_product, pattern="^buy_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_vnd, pattern="^pay_vnd_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_usdt, pattern="^pay_usdt_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_quick_quantity, pattern="^buyqty_(?:vnd|usdt)_\\d+_\\d+$"))
+    app.add_handler(CallbackQueryHandler(prompt_manual_quantity, pattern="^buyqtymanual_(?:vnd|usdt)_\\d+$"))
+    app.add_handler(CallbackQueryHandler(prompt_quick_quantity, pattern="^buyqtyquick_(?:vnd|usdt)_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_direct_payment_vietqr, pattern="^directpay_vietqr_\\d+_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_direct_payment_binance, pattern="^directpay_binance_\\d+_\\d+$"))
     app.add_handler(CallbackQueryHandler(show_account, pattern="^account$"))
-    app.add_handler(CallbackQueryHandler(show_history, pattern="^history$"))
+    app.add_handler(CallbackQueryHandler(show_history, pattern="^history(?:_page_\\d+)?$"))
     app.add_handler(CallbackQueryHandler(show_order_detail, pattern="^order_detail_\\d+$"))
     app.add_handler(CallbackQueryHandler(show_deposit, pattern="^deposit$"))
     app.add_handler(CallbackQueryHandler(process_deposit, pattern="^deposit_\\d+$"))

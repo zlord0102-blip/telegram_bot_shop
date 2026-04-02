@@ -5,6 +5,7 @@ import asyncio
 import aiohttp
 import os
 import io
+import json
 import logging
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
@@ -28,6 +29,7 @@ SEPAY_LAST_SEEN_TX_ID_KEY = "sepay_last_seen_tx_id"
 BINANCE_LAST_CHECKED_INSERT_TIME_KEY = "binance_last_checked_insert_time_ms"
 PAYMENT_RELAY_NOTIFY_TOKEN_KEY = "payment_notify_bot_token"
 PAYMENT_RELAY_NOTIFY_USER_ID_KEY = "payment_notify_user_id"
+CHECKER_HEALTH_KEY = "bot_checker_health"
 
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -85,6 +87,7 @@ else:
         build_bot_delivery_payload_for_direct_order,
         ensure_bot_delivery_outbox,
         fulfill_bot_direct_order,
+        get_setting,
         get_due_bot_delivery_outbox,
         get_pending_binance_direct_orders,
         is_processed_binance_deposit,
@@ -94,6 +97,7 @@ else:
         mark_bot_delivery_outbox_sent,
         record_direct_order_external_payment,
         schedule_bot_delivery_outbox_retry,
+        set_setting,
         set_direct_order_status,
         get_recent_confirmed_direct_orders_missing_delivery,
     )
@@ -349,6 +353,32 @@ async def _save_setting_value(key: str, value: str):
             (key, text),
         )
         await db.commit()
+
+
+async def _load_checker_health_state() -> dict:
+    raw_value = await _load_setting_value(CHECKER_HEALTH_KEY)
+    if not raw_value:
+        return {}
+    try:
+        parsed = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+async def _save_checker_health_state(state: dict):
+    payload = {
+        "heartbeatAt": str(state.get("heartbeatAt") or "").strip() or None,
+        "lastSuccessAt": str(state.get("lastSuccessAt") or "").strip() or None,
+        "lastError": str(state.get("lastError") or "").strip()[:500] or None,
+        "mode": str(state.get("mode") or "normal").strip() or "normal",
+        "loopState": str(state.get("loopState") or "unknown").strip() or "unknown",
+        "intervalSeconds": max(1, int(state.get("intervalSeconds") or 30)),
+        "sleepSeconds": max(1, int(state.get("sleepSeconds") or 30)),
+        "lastDurationMs": max(0, int(state.get("lastDurationMs") or 0)),
+        "runtime": "supabase" if state.get("useSupabase") else "sqlite",
+    }
+    await _save_setting_value(CHECKER_HEALTH_KEY, json.dumps(payload, ensure_ascii=False))
 
 
 async def get_sepay_token():
@@ -1382,18 +1412,58 @@ async def run_checker(bot_app=None, interval=30):
     await init_checker_db()
     logger.info("🔄 SePay checker started (interval: %ss, supabase=%s)", interval, USE_SUPABASE)
     last_mode = None
+    health_state = await _load_checker_health_state()
+    health_state.update(
+        {
+            "loopState": "starting",
+            "mode": "normal",
+            "intervalSeconds": max(1, int(interval or 30)),
+            "sleepSeconds": max(1, int(interval or 30)),
+            "useSupabase": bool(USE_SUPABASE),
+        }
+    )
+    try:
+        await _save_checker_health_state(health_state)
+    except Exception as exc:
+        logger.warning("Unable to persist initial checker health: %s", exc)
     
     while True:
+        loop_started_at = datetime.now(timezone.utc)
+        error_message = None
+        loop_state = "ok"
         try:
             await process_transactions(bot_app)
         except Exception as e:
+            error_message = str(e or "checker_error")
+            loop_state = "error"
             logger.exception("Checker error: %s", e)
         fast_mode = has_latest_vietqr_message()
         mode = "fast" if fast_mode else "normal"
         if mode != last_mode:
             logger.info("SePay checker mode: %s", mode)
             last_mode = mode
-        await asyncio.sleep(5 if fast_mode else interval)
+        sleep_seconds = 5 if fast_mode else interval
+        heartbeat_at = datetime.now(timezone.utc).isoformat()
+        duration_ms = max(0, int((datetime.now(timezone.utc) - loop_started_at).total_seconds() * 1000))
+        health_state.update(
+            {
+                "heartbeatAt": heartbeat_at,
+                "mode": mode,
+                "loopState": loop_state,
+                "intervalSeconds": max(1, int(interval or 30)),
+                "sleepSeconds": max(1, int(sleep_seconds or 1)),
+                "lastDurationMs": duration_ms,
+                "useSupabase": bool(USE_SUPABASE),
+                "lastError": error_message[:500] if error_message else None,
+            }
+        )
+        if not error_message:
+            health_state["lastSuccessAt"] = heartbeat_at
+        try:
+            await _save_checker_health_state(health_state)
+        except Exception as exc:
+            logger.warning("Unable to persist checker health: %s", exc)
+        await asyncio.sleep(sleep_seconds)
 
 if __name__ == "__main__":
     asyncio.run(run_checker())

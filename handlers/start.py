@@ -18,6 +18,7 @@ from helpers.ui import (
     get_user_keyboard,
     is_feature_enabled,
 )
+from helpers.history_menu import build_history_menu
 from helpers.menu import delete_last_menu_message, set_last_menu_message, clear_last_menu_message
 from locales import get_text
 
@@ -246,29 +247,9 @@ async def handle_history_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if not orders:
         await update.message.reply_text(get_text(lang, "history_empty"))
         return
-    
-    text = get_text(lang, "history_title")
-    keyboard = []
-    
-    # Giới hạn 5 đơn gần nhất
-    for order in orders[:5]:
-        order_id, product_name, content, price, created_at, quantity = order
-        quantity = quantity or 1
-        short_name = product_name[:8] if len(product_name) > 8 else product_name
-        
-        # Rút gọn giá
-        if price >= 1000000:
-            price_str = f"{price//1000000}tr"
-        elif price >= 1000:
-            price_str = f"{price//1000}k"
-        else:
-            price_str = str(price)
-        
-        keyboard.append([InlineKeyboardButton(f"#{order_id} {short_name} x{quantity} {price_str}", callback_data=f"order_detail_{order_id}")])
-    
-    keyboard.append([InlineKeyboardButton("🗑 Xóa", callback_data="delete_msg")])
-    
-    menu_msg = await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    text, reply_markup, _, _ = build_history_menu(orders, lang, page=0)
+    menu_msg = await update.message.reply_text(text, reply_markup=reply_markup)
     set_last_menu_message(context, menu_msg)
 
 async def handle_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
