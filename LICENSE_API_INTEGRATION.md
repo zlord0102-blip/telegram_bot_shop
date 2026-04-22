@@ -38,6 +38,12 @@ Luồng v1:
 5. Sau đó extension không gửi raw key nữa.
 6. Mỗi 6 giờ, extension gọi `POST /api/licenses/validate` bằng `activationToken`.
 
+Lưu ý:
+
+- Mặc định mỗi license key hoạt động theo kiểu `1 thiết bị`.
+- Nếu admin bật chế độ `Không giới hạn thiết bị` cho key đó, cùng một raw key có thể activate trên nhiều fingerprint khác nhau.
+- Mỗi fingerprint / cài đặt vẫn nhận `activationToken` riêng và phải tự lưu token của chính nó.
+
 ## 3. Base URL
 
 Thay `YOUR_DOMAIN` bằng domain của `admin-dashboard`.
@@ -63,7 +69,13 @@ Yêu cầu:
 - không quá 255 ký tự
 - không thay đổi liên tục giữa các lần chạy
 
-Nếu 1 key đã bind với fingerprint A, mà extension khác gửi fingerprint B, API sẽ trả `fingerprint_mismatch`.
+Nếu key đang ở chế độ `1 thiết bị` và đã bind với fingerprint A, mà extension khác gửi fingerprint B, API sẽ trả `fingerprint_mismatch`.
+
+Nếu key được admin đặt là `Không giới hạn thiết bị` thì:
+
+- fingerprint A, B, C... đều có thể activate độc lập
+- mỗi fingerprint sẽ có `activationToken` riêng
+- `validate` vẫn phải dùng đúng `activationToken` + đúng `fingerprint` đã bind với token đó
 
 ## 5. API Activate
 
@@ -109,6 +121,19 @@ Nếu 1 key đã bind với fingerprint A, mà extension khác gửi fingerprint
 }
 ```
 
+### Service unavailable response
+
+Nếu API trả HTTP `503` với `code="license_service_unavailable"`, extension không được báo `License Key không hợp lệ`.
+Đây là lỗi hạ tầng/server license tạm thời, ví dụ Supabase key hết hiệu lực hoặc RPC/database chưa sẵn sàng.
+
+```json
+{
+  "success": false,
+  "code": "license_service_unavailable",
+  "error": "Dịch vụ license tạm thời không khả dụng. Vui lòng thử lại sau."
+}
+```
+
 ## 6. API Validate
 
 ### Request
@@ -144,7 +169,7 @@ Nếu 1 key đã bind với fingerprint A, mà extension khác gửi fingerprint
 - `expired`: key đã hết hạn
 - `revoked`: key bị admin thu hồi
 - `extension_disabled`: extension này đã bị admin tắt
-- `fingerprint_mismatch`: key đã bind với fingerprint khác
+- `fingerprint_mismatch`: key đang ở chế độ `1 thiết bị` và đã bind với fingerprint khác
 - `not_found`: không tìm thấy key/token hợp lệ
 
 ## 8. Cách extension nên xử lý
@@ -191,7 +216,12 @@ async function activateLicense(rawKey: string, fingerprint: string) {
   });
 
   const json = await res.json();
-  if (!res.ok || !json?.success) throw new Error(json?.error || "Activate failed");
+  if (!res.ok || !json?.success) {
+    if (json?.code === "license_service_unavailable" || res.status >= 500) {
+      throw new Error("License server unavailable. Please retry later.");
+    }
+    throw new Error(json?.error || "Activate failed");
+  }
 
   if (json.data.valid) {
     saveLocal({
@@ -217,7 +247,12 @@ async function validateLicense(activationToken: string, fingerprint: string) {
   });
 
   const json = await res.json();
-  if (!res.ok || !json?.success) throw new Error(json?.error || "Validate failed");
+  if (!res.ok || !json?.success) {
+    if (json?.code === "license_service_unavailable" || res.status >= 500) {
+      throw new Error("License server unavailable. Please retry later.");
+    }
+    throw new Error(json?.error || "Validate failed");
+  }
 
   if (json.data.valid) {
     saveLocal({ lastValidatedAt: Date.now(), expiresAt: json.data.expiresAt });
@@ -233,7 +268,8 @@ Trên dashboard:
 
 1. Tạo extension với `Code công khai`, ví dụ `EMAIL_INBOX`
 2. Tạo license key cho extension đó
-3. Gửi raw key cho khách
+3. Nếu cần, chỉnh key đó sang chế độ `Không giới hạn thiết bị`
+4. Gửi raw key cho khách
 
 Trong extension:
 
@@ -247,5 +283,5 @@ Trong extension:
 
 - Không lưu plain raw license key trong database của bạn nếu không cần.
 - Sau khi activate thành công, chỉ dùng `activationToken`.
-- `extensionCode` là public, nhưng `SUPABASE_SERVICE_ROLE_KEY` phải chỉ nằm ở server.
+- `extensionCode` là public, nhưng `SUPABASE_SECRET_KEY` hoặc legacy `SUPABASE_SERVICE_ROLE_KEY` phải chỉ nằm ở server.
 - Public API route đã chạy server-side; extension chỉ gọi HTTP tới dashboard domain của bạn.

@@ -176,7 +176,7 @@ Mở file `.env` và điền thông tin:
 
 ```env
 # === BẮT BUỘC ===
-BOT_TOKEN=7123456789:AAHxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+BOT_TOKEN=your_telegram_bot_token
 ADMIN_IDS=123456789
 
 # === SEPAY (Nạp tiền tự động) ===
@@ -470,8 +470,8 @@ Thêm các biến sau (xem mẫu `.env.example`):
 ```
 USE_SUPABASE=true
 SUPABASE_URL=...
-SUPABASE_ANON_KEY=...
-SUPABASE_SERVICE_ROLE_KEY=...
+SUPABASE_PUBLISHABLE_KEY=...
+SUPABASE_SECRET_KEY=...
 ```
 ```
 # Chọn mode thanh toán sản phẩm
@@ -501,7 +501,8 @@ Dashboard nằm trong thư mục `admin-dashboard/`.
 Tạo file `admin-dashboard/.env.local`:
 ```
 NEXT_PUBLIC_SUPABASE_URL=...
-NEXT_PUBLIC_SUPABASE_ANON_KEY=...
+NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=...
+SUPABASE_SECRET_KEY=...
 ```
 
 ### Chạy local

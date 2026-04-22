@@ -1287,6 +1287,29 @@ export async function getDirectOrderByCode(code: string) {
   return mapped;
 }
 
+export async function getDirectOrderByCodeForAuth(code: string, authUserId: string) {
+  const safeCode = code.trim();
+  const safeAuthUserId = String(authUserId || "").trim();
+  if (!safeCode || !safeAuthUserId) return null;
+
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("website_direct_orders")
+    .select("id")
+    .eq("code", safeCode)
+    .eq("auth_user_id", safeAuthUserId)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(error.message);
+  }
+  if (!data) {
+    return null;
+  }
+
+  return getDirectOrderByCode(safeCode);
+}
+
 export async function getUserOrdersSummary(telegramUserId: number, limit = 20): Promise<UserOrdersSummary> {
   const userId = Math.max(1, Math.trunc(Number(telegramUserId) || 0));
   if (!Number.isFinite(userId) || userId <= 0) {

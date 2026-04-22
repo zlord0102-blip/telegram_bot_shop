@@ -7,7 +7,7 @@ from telegram import Update, InputFile, KeyboardButton, ReplyKeyboardMarkup, Inl
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes, ConversationHandler
 from database import (
-    get_products, get_product, get_balance,
+    get_product, get_balance,
     get_user_orders, create_deposit_with_settings, get_or_create_user,
     create_direct_order_with_settings,
     create_binance_direct_order,
@@ -16,13 +16,14 @@ from database import (
 )
 from keyboards import (
     products_keyboard, confirm_buy_keyboard,
-    main_menu_keyboard, delete_keyboard
+    main_menu_keyboard, delete_keyboard, back_keyboard
 )
-from helpers.ui import get_shop_menu_text, get_shop_page_size, get_user_keyboard, is_feature_enabled
+from helpers.ui import get_user_keyboard, is_feature_enabled
 from helpers.history_menu import build_history_menu
 from helpers.menu import delete_last_menu_message, set_last_menu_message, clear_last_menu_message
 from helpers.sepay_state import mark_vietqr_message, mark_bot_message
 from helpers.formatting import format_stock_items
+from helpers.shop_catalog import build_shop_folder_view, build_shop_top_level_view
 from helpers.purchase_messages import (
     build_delivery_message,
     build_purchase_summary_text,
@@ -745,12 +746,10 @@ async def handle_shop_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=await get_user_keyboard(lang))
         return
     await delete_last_menu_message(context, update.effective_chat.id)
-    products = await get_products()
-    page_size = await get_shop_page_size()
-    text = await get_shop_menu_text(lang)
+    text, markup = await build_shop_top_level_view(lang, page=0)
     menu_msg = await update.message.reply_text(
         text,
-        reply_markup=products_keyboard(products, lang, page=0, page_size=page_size),
+        reply_markup=markup,
     )
     set_last_menu_message(context, menu_msg)
 
@@ -1394,16 +1393,56 @@ async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (TypeError, ValueError):
         page = 0
 
-    products = await get_products()
-    page_size = await get_shop_page_size()
     lang = await get_user_language(query.from_user.id)
-    text = await get_shop_menu_text(lang)
-    markup = products_keyboard(products, lang, page=page, page_size=page_size)
+    text, markup = await build_shop_top_level_view(lang, page=page)
     try:
         await query.edit_message_text(
             text,
             reply_markup=markup,
         )
+    except BadRequest as exc:
+        if "Message is not modified" not in str(exc):
+            raise
+    set_last_menu_message(context, query.message)
+
+
+async def show_shop_folder(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    lang = await get_user_language(query.from_user.id)
+    if not await is_feature_enabled("show_shop"):
+        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=delete_keyboard())
+        return
+
+    folder_id = 0
+    page = 0
+    origin_top_page = 0
+    try:
+        parts = (query.data or "").split("_")
+        if len(parts) == 4 and parts[0] == "shopfolder":
+            folder_id = max(0, int(parts[1]))
+            page = max(0, int(parts[2]))
+            origin_top_page = max(0, int(parts[3]))
+    except (TypeError, ValueError):
+        folder_id = 0
+        page = 0
+        origin_top_page = 0
+
+    view = await build_shop_folder_view(folder_id, lang, page=page, origin_top_page=origin_top_page)
+    if not view:
+        missing_text = (
+            "📁 Danh mục này hiện không còn sản phẩm."
+            if lang != "en"
+            else "📁 This folder has no available products."
+        )
+        await query.edit_message_text(missing_text, reply_markup=back_keyboard(f"shop_{origin_top_page}"))
+        set_last_menu_message(context, query.message)
+        return
+
+    text, markup = view
+    try:
+        await query.edit_message_text(text, reply_markup=markup)
     except BadRequest as exc:
         if "Message is not modified" not in str(exc):
             raise

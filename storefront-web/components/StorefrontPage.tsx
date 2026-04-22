@@ -311,10 +311,13 @@ export default function StorefrontPage({
 
   /* Checkout polling */
   useEffect(() => {
-    if (!checkout?.code || checkout.status !== "pending") return;
+    if (!checkout?.code || checkout.status !== "pending" || !authSession?.access_token) return;
     const timer = setInterval(async () => {
       try {
-        const res = await fetch(`/api/orders/status?code=${encodeURIComponent(checkout.code)}`, { cache: "no-store" });
+        const res = await fetch(`/api/orders/status?code=${encodeURIComponent(checkout.code)}`, {
+          cache: "no-store",
+          headers: { Authorization: `Bearer ${authSession.access_token}` }
+        });
         if (!res.ok) return;
         const payload = await res.json();
         const latest = payload?.order as DirectOrderRecord | undefined;
@@ -329,7 +332,7 @@ export default function StorefrontPage({
       } catch { /* ignore */ }
     }, 5000);
     return () => clearInterval(timer);
-  }, [checkout]);
+  }, [checkout, authSession?.access_token]);
 
   useEffect(() => {
     if (!checkout || checkout.status !== "pending") return;
@@ -464,9 +467,13 @@ export default function StorefrontPage({
     setCodeLookupData(null);
     const code = codeLookup.trim();
     if (!code) { setCodeLookupError("Vui lòng nhập mã thanh toán."); return; }
+    if (!authSession?.access_token) { setCodeLookupError("Vui lòng đăng nhập để tra cứu đơn hàng."); return; }
     setCodeLookupLoading(true);
     try {
-      const res = await fetch(`/api/orders/status?code=${encodeURIComponent(code)}`, { cache: "no-store" });
+      const res = await fetch(`/api/orders/status?code=${encodeURIComponent(code)}`, {
+        cache: "no-store",
+        headers: { Authorization: `Bearer ${authSession.access_token}` }
+      });
       const payload = await res.json();
       if (!res.ok || !payload?.ok) throw new Error(payload?.error || "Không tìm thấy đơn với mã này.");
       setCodeLookupData(payload.order as DirectOrderRecord);

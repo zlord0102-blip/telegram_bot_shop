@@ -4,22 +4,20 @@ from telegram.ext import ContextTypes
 from database import (
     get_or_create_user,
     get_balance,
-    get_products,
     get_setting,
     get_user_orders,
     get_user_language,
     set_user_language,
 )
-from keyboards import products_keyboard
 from helpers.ui import (
     get_shop_menu_text,
-    get_shop_page_size,
     get_support_panel_text,
     get_user_keyboard,
     is_feature_enabled,
 )
 from helpers.history_menu import build_history_menu
 from helpers.menu import delete_last_menu_message, set_last_menu_message, clear_last_menu_message
+from helpers.shop_catalog import build_shop_top_level_view
 from locales import get_text
 
 
@@ -172,11 +170,10 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.")
         return
 
-    products = await get_products()
-    page_size = await get_shop_page_size()
+    text, markup = await build_shop_top_level_view(lang, page=0)
     menu_msg = await update.message.reply_text(
-        select_text,
-        reply_markup=products_keyboard(products, lang, page=0, page_size=page_size),
+        text,
+        reply_markup=markup,
     )
     set_last_menu_message(context, menu_msg)
 
@@ -225,12 +222,11 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="⚠️ Tính năng này đang tạm tắt."
         )
         return
-    products = await get_products()
-    page_size = await get_shop_page_size()
+    text, markup = await build_shop_top_level_view(lang, page=0)
     menu_msg = await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text=select_text,
-        reply_markup=products_keyboard(products, lang, page=0, page_size=page_size)
+        text=text,
+        reply_markup=markup
     )
     set_last_menu_message(context, menu_msg)
 
@@ -330,11 +326,10 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await is_feature_enabled("show_shop"):
         await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.")
         return
-    products = await get_products()
-    page_size = await get_shop_page_size()
+    text, markup = await build_shop_top_level_view(lang, page=0)
     await query.edit_message_text(
-        await get_shop_menu_text(lang),
-        reply_markup=products_keyboard(products, lang, page=0, page_size=page_size)
+        text,
+        reply_markup=markup
     )
     set_last_menu_message(context, query.message)
 

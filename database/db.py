@@ -138,6 +138,30 @@ async def init_db():
             await db.execute("ALTER TABLE products ADD COLUMN sort_position INTEGER")
         except:
             pass
+        try:
+            await db.execute("ALTER TABLE products ADD COLUMN bot_folder_id INTEGER")
+        except:
+            pass
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS bot_product_folders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                sort_position INTEGER,
+                created_at TEXT
+            )
+        """)
+        await db.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_bot_product_folders_name_lower
+            ON bot_product_folders (LOWER(TRIM(name)))
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_bot_product_folders_sort
+            ON bot_product_folders (sort_position, id)
+        """)
+        await db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_products_bot_folder_sort
+            ON products (bot_folder_id, sort_position, id)
+        """)
         await db.execute("""
             CREATE TABLE IF NOT EXISTS format_templates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -458,7 +482,7 @@ async def get_products():
             """
             SELECT
                 id, name, price, description, price_usdt, format_data,
-                price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position
+                price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id
             FROM products
             WHERE COALESCE(is_deleted, 0) = 0 AND COALESCE(is_hidden, 0) = 0
             ORDER BY
@@ -482,8 +506,36 @@ async def get_products():
                 "promo_buy_quantity": row[7] or 0,
                 "promo_bonus_quantity": row[8] or 0,
                 "sort_position": row[9] if row[9] is not None else None,
+                "bot_folder_id": row[10] if row[10] is not None else None,
             })
         return products
+
+
+async def get_bot_product_folders():
+    async with aiosqlite.connect(DB_PATH) as db:
+        try:
+            cursor = await db.execute(
+                """
+                SELECT id, name, sort_position
+                FROM bot_product_folders
+                ORDER BY
+                    CASE WHEN sort_position IS NULL THEN 1 ELSE 0 END ASC,
+                    sort_position ASC,
+                    id ASC
+                """
+            )
+        except Exception:
+            return []
+
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "sort_position": row[2] if row[2] is not None else None,
+            }
+            for row in rows
+        ]
 
 async def get_product(product_id: int):
     async with aiosqlite.connect(DB_PATH) as db:
@@ -491,7 +543,7 @@ async def get_product(product_id: int):
             """
             SELECT
                 id, name, price, description, price_usdt, format_data,
-                price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position
+                price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id
             FROM products
             WHERE id = ? AND COALESCE(is_deleted, 0) = 0 AND COALESCE(is_hidden, 0) = 0
             """,
@@ -515,6 +567,7 @@ async def get_product(product_id: int):
                 "promo_buy_quantity": row[7] or 0,
                 "promo_bonus_quantity": row[8] or 0,
                 "sort_position": row[9] if row[9] is not None else None,
+                "bot_folder_id": row[10] if row[10] is not None else None,
             }
         return None
 
@@ -528,6 +581,7 @@ async def add_product(
     promo_buy_quantity: int = 0,
     promo_bonus_quantity: int = 0,
     sort_position: int = None,
+    bot_folder_id: int = None,
 ):
     async with aiosqlite.connect(DB_PATH) as db:
         if sort_position is not None:
@@ -542,8 +596,8 @@ async def add_product(
         cursor = await db.execute(
             """
             INSERT INTO products
-            (name, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (name, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 name,
@@ -555,6 +609,7 @@ async def add_product(
                 promo_buy_quantity,
                 promo_bonus_quantity,
                 int(sort_position) if sort_position is not None else None,
+                int(bot_folder_id) if bot_folder_id is not None else None,
             ),
         )
         await db.commit()

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createDirectOrderCheckout } from "@/lib/shop";
 import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export async function POST(request: NextRequest) {
   try {
@@ -14,10 +15,32 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ ok: false, error: "Vui lòng đăng nhập để tạo đơn." }, { status: 401 });
     }
 
+    const ipRateLimit = checkRateLimit(`checkout:ip:${getClientIp(request)}`, {
+      windowMs: 60_000,
+      max: 60
+    });
+    if (ipRateLimit.limited) {
+      return NextResponse.json(
+        { ok: false, error: "Bạn thao tác quá nhanh. Vui lòng thử lại sau." },
+        { status: 429, headers: { "Retry-After": String(ipRateLimit.retryAfterSeconds) } }
+      );
+    }
+
     const supabase = getSupabaseAdminClient();
     const { data: userData, error: userError } = await supabase.auth.getUser(token);
     if (userError || !userData.user) {
       return NextResponse.json({ ok: false, error: "Phiên đăng nhập không hợp lệ." }, { status: 401 });
+    }
+
+    const userRateLimit = checkRateLimit(`checkout:user:${userData.user.id}`, {
+      windowMs: 60_000,
+      max: 20
+    });
+    if (userRateLimit.limited) {
+      return NextResponse.json(
+        { ok: false, error: "Bạn tạo đơn quá nhanh. Vui lòng thử lại sau." },
+        { status: 429, headers: { "Retry-After": String(userRateLimit.retryAfterSeconds) } }
+      );
     }
 
     const email = String(userData.user.email || "").trim().toLowerCase();

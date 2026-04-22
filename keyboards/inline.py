@@ -33,6 +33,20 @@ def _build_product_button_label(product: dict, lang: str = "vi") -> str:
     status_text = "❌ Hết" if stock <= 0 else f"📦 {stock}"
     return f"{name_text} | {price_text} | {status_text}"
 
+
+def _build_folder_button_label(folder: dict, lang: str = "vi") -> str:
+    name_text = _clip_button_text(folder.get("name") or "", limit=40)
+    return f"📁 {name_text}" if lang != "en" else f"📁 {name_text}"
+
+
+def _safe_optional_int(value):
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None):
     flags = flags or {}
     def enabled(key: str, default: bool = True) -> bool:
@@ -140,19 +154,40 @@ def admin_sold_codes_keyboard(products):
     keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
-def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int = 10):
+def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int = 10, folders=None):
     keyboard = []
-    total_products = len(products or [])
-    total_pages = max(1, math.ceil(total_products / max(1, page_size)))
+    folders = folders or []
+    valid_folder_ids = {
+        _safe_optional_int(folder.get("id"))
+        for folder in folders
+        if _safe_optional_int(folder.get("id")) is not None
+    }
+    top_level_products = [
+        product
+        for product in (products or [])
+        if _safe_optional_int(product.get("bot_folder_id")) is None
+        or _safe_optional_int(product.get("bot_folder_id")) not in valid_folder_ids
+    ]
+    entries = (
+        [("folder", folder) for folder in folders]
+        + [("product", product) for product in top_level_products]
+    )
+    total_entries = len(entries)
+    total_pages = max(1, math.ceil(total_entries / max(1, page_size)))
     safe_page = max(0, min(page, total_pages - 1))
 
     start = safe_page * page_size
     end = start + page_size
-    page_products = (products or [])[start:end]
+    page_entries = entries[start:end]
 
-    for p in page_products:
-        label = _build_product_button_label(p, lang=lang)
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"buy_{p['id']}")])
+    for entry_type, entry_value in page_entries:
+        if entry_type == "folder":
+            folder_id = int(entry_value["id"])
+            label = _build_folder_button_label(entry_value, lang=lang)
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"shopfolder_{folder_id}_0_{safe_page}")])
+        else:
+            label = _build_product_button_label(entry_value, lang=lang)
+            keyboard.append([InlineKeyboardButton(label, callback_data=f"buy_{entry_value['id']}")])
 
     if total_pages > 1:
         prev_text = "⬅️ Prev" if lang == "en" else "⬅️ Trước"
@@ -168,6 +203,46 @@ def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int 
     refresh_text = "🔄 Refresh" if lang == 'en' else "🔄 Cập nhật"
     delete_text = "🗑 Delete" if lang == 'en' else "🗑 Xóa"
     keyboard.append([InlineKeyboardButton(refresh_text, callback_data=f"shop_{safe_page}")])
+    keyboard.append([InlineKeyboardButton(delete_text, callback_data="delete_msg")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def folder_products_keyboard(
+    products,
+    *,
+    folder_id: int,
+    origin_top_page: int = 0,
+    lang: str = "vi",
+    page: int = 0,
+    page_size: int = 10,
+):
+    keyboard = []
+    total_products = len(products or [])
+    total_pages = max(1, math.ceil(total_products / max(1, page_size)))
+    safe_page = max(0, min(page, total_pages - 1))
+
+    start = safe_page * page_size
+    end = start + page_size
+    page_products = (products or [])[start:end]
+
+    for product in page_products:
+        label = _build_product_button_label(product, lang=lang)
+        keyboard.append([InlineKeyboardButton(label, callback_data=f"buy_{product['id']}")])
+
+    if total_pages > 1:
+        prev_text = "⬅️ Prev" if lang == "en" else "⬅️ Trước"
+        next_text = "Next ➡️" if lang == "en" else "Sau ➡️"
+        prev_page = safe_page - 1 if safe_page > 0 else safe_page
+        next_page = safe_page + 1 if safe_page < total_pages - 1 else safe_page
+        keyboard.append([
+            InlineKeyboardButton(prev_text, callback_data=f"shopfolder_{folder_id}_{prev_page}_{origin_top_page}"),
+            InlineKeyboardButton(f"{safe_page + 1}/{total_pages}", callback_data=f"shopfolder_{folder_id}_{safe_page}_{origin_top_page}"),
+            InlineKeyboardButton(next_text, callback_data=f"shopfolder_{folder_id}_{next_page}_{origin_top_page}"),
+        ])
+
+    back_text = "🔙 Back" if lang == "en" else "🔙 Quay lại"
+    delete_text = "🗑 Delete" if lang == "en" else "🗑 Xóa"
+    keyboard.append([InlineKeyboardButton(back_text, callback_data=f"shop_{max(0, origin_top_page)}")])
     keyboard.append([InlineKeyboardButton(delete_text, callback_data="delete_msg")])
     return InlineKeyboardMarkup(keyboard)
 

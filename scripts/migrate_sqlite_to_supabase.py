@@ -7,7 +7,7 @@ from supabase import create_client
 
 DB_PATH = os.getenv("SQLITE_DB_PATH", "data/shop.db")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 BATCH_SIZE = int(os.getenv("MIGRATION_BATCH_SIZE", "500"))
 
 
@@ -181,13 +181,13 @@ def migrate_processed_transactions(conn, supabase):
 
 
 def main():
-    if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
-        raise SystemExit("Missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in environment.")
+    if not SUPABASE_URL or not SUPABASE_SECRET_KEY:
+        raise SystemExit("Missing SUPABASE_URL or SUPABASE_SECRET_KEY/SUPABASE_SERVICE_ROLE_KEY in environment.")
 
     if not os.path.exists(DB_PATH):
         raise SystemExit(f"SQLite database not found at {DB_PATH}")
 
-    supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+    supabase = create_client(SUPABASE_URL, SUPABASE_SECRET_KEY)
     conn = sqlite3.connect(DB_PATH)
 
     try:

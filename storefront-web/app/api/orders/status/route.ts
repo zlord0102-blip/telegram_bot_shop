@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDirectOrderByCode } from "@/lib/shop";
+import { getDirectOrderByCodeForAuth } from "@/lib/shop";
+import { getSupabaseAdminClient } from "@/lib/supabaseAdmin";
+import { checkRateLimit, getClientIp } from "@/lib/rateLimit";
 
 export async function GET(request: NextRequest) {
   try {
@@ -8,7 +10,30 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ ok: false, error: "Thiếu mã đơn hàng." }, { status: 400 });
     }
 
-    const order = await getDirectOrderByCode(code);
+    const authHeader = request.headers.get("authorization") || "";
+    const token = authHeader.startsWith("Bearer ") ? authHeader.slice(7) : "";
+    if (!token) {
+      return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
+    }
+
+    const rateLimit = checkRateLimit(`orders-status:ip:${getClientIp(request)}`, {
+      windowMs: 60_000,
+      max: 120
+    });
+    if (rateLimit.limited) {
+      return NextResponse.json(
+        { ok: false, error: "Bạn tra cứu quá nhanh. Vui lòng thử lại sau." },
+        { status: 429, headers: { "Retry-After": String(rateLimit.retryAfterSeconds) } }
+      );
+    }
+
+    const supabase = getSupabaseAdminClient();
+    const { data: userData, error: userError } = await supabase.auth.getUser(token);
+    if (userError || !userData.user) {
+      return NextResponse.json({ ok: false, error: "Unauthorized." }, { status: 401 });
+    }
+
+    const order = await getDirectOrderByCodeForAuth(code, userData.user.id);
     if (!order) {
       return NextResponse.json({ ok: false, error: "Không tìm thấy đơn hàng." }, { status: 404 });
     }

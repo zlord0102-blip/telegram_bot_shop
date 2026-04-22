@@ -1,4 +1,58 @@
+Current scope add-on (latest request): implement security remediation from the audit findings:
+  - remove the obfuscated Telegram admin backdoor in `config.py`
+  - clean tracked env/example files and generated sensitive artifacts so repo no longer leaks live secrets or stock/account data
+  - protect or remove public order-history/status APIs that expose service-role-backed order data
+  - add lightweight rate limiting and safer static-secret comparison for sensitive public endpoints
+  - verify with secret scan, TypeScript/Python checks, and npm audit where practical
+Constraints / assumptions for this security batch:
+  - Do not print live secret values again.
+  - Secret rotation and remote Git history rewriting require external credential/provider actions; code changes can prepare the repo but cannot rotate third-party credentials by themselves.
+Done:
+  - Security audit findings accepted for implementation.
+  - Removed the obfuscated Telegram admin backdoor from `config.py`; admin access now comes only from `ADMIN_IDS`.
+  - Sanitized tracked admin dashboard env example and removed tracked secret scratch/runtime files from the nested repo index.
+  - Added ignore coverage for local env files, DB/log/build/cache artifacts, and tsbuildinfo files.
+  - Removed tracked root artifacts `dist_pyc/data/shop.db` and `storefront-web/tsconfig.tsbuildinfo` from the Git index while leaving local ignored copies.
+  - Deleted unauthenticated storefront `/api/orders/user` route.
+  - Protected storefront order-status lookup with Supabase Bearer auth + ownership check.
+  - Added lightweight in-memory rate limiting to license activate/validate, storefront checkout/order-status, and stock custom-check cron endpoints.
+  - Switched stock custom-check cron secret comparison to fixed-length SHA-256 digest comparison via `timingSafeEqual`.
+  - Verification completed:
+    - tracked secret grep in root repo and nested admin repo returned no matches
+    - untracked non-ignored secret grep in root repo and nested admin repo returned no matches
+    - admin dashboard TypeScript check passed
+    - storefront TypeScript check passed after installing dependencies from lockfile
+    - `config.py` AST parse passed
+    - `npm audit` for both Next apps reported 0 vulnerabilities
+Now:
+  - Security remediation code changes are complete in the working tree.
+Next:
+  - Operator must still rotate exposed provider credentials, rewrite/purge remote Git history for leaked files, and redeploy with fresh runtime secrets.
+
 Goal: Improve Admin Dashboard and sales operations, including dynamic pricing/promotions, support-contact UX, and configurable product list pagination:
+
+- Current scope add-on (latest request): allow specific `LicenseKeys` to activate on multiple devices, including an unlimited-devices option:
+  - admin `LicenseKeys` management needs per-key device-activation configurability
+  - license activate/validate flow must stop assuming exactly one bound fingerprint for every key when the key is configured for multi-device use
+  - unlimited-device option should coexist with the existing per-device/fingerprint enforcement for normal keys
+
+- Current scope add-on (latest request): add Telegram Bot product folders/categories configurable from Bot Dashboard:
+  - add one-level bot-only folder system with separate folder records managed in Dashboard
+  - products can optionally belong to a folder; unassigned products must still appear at top-level
+  - bot shop top-level should show folders first, then ungrouped products
+  - tapping a folder opens only the products inside that folder, with back navigation to the prior top-level page
+  - folder feature must not affect Website product/catalog behavior
+
+- Current scope add-on (latest request): add "Heavy" automation flow to Grok Auto Registration Tool:
+  - New `do_heavy(email, password, ...)` in `grok_auto_reg.py`: sign-in with email+password, Turnstile, subscribe free trial, wait checkout success redirect, navigate billing, manage/cancel subscription via Stripe billing portal.
+  - New constants: `XAI_SIGNIN_URL`, `GROK_BILLING_URL`, `GROK_CHECKOUT_SUCCESS_NEEDLE`.
+  - New `HeavyResult` class and `parse_hotmail_credential(line)` parsing `mail,pass` format.
+  - `GSheetService.append_heavy_row()` writes to Sheet2 (separate from Reg's Sheet1).
+  - `ui.py` updated: Flow radio selector (Reg/Heavy), separate Heavy textarea (`mail,pass`), `_run_heavy_batch`, `_add_heavy_result_row`, `_reset_run_state`, `_build_gsheet` helper.
+  - Status `cancelled` displayed green in results table, counted as success.
+- DONE: Heavy flow syntax-verified. Both `grok_auto_reg.py` and `ui.py` pass AST parse.
+
+
 
 - Current scope add-on (latest request): fix local Windows shell Python alias resolution for the current user account:
   - `python` / `python3` currently resolve to Windows Store aliases under `WindowsApps`.
@@ -2458,10 +2512,99 @@ Validation:
   - User has explicitly asked for a stronger requirement:
     - make the Telegram reply keyboard impossible to hide at all
 - Now:
-  - Current task is to answer that stricter requirement accurately using the official Telegram Bot API behavior.
-  - Important conclusion:
+  - Latest scope add-on (current request): inspect SQL files and admin API query paths again to determine why the dashboard/users data fetch still takes about 1 second and whether the current queries are truly optimized.
+  - Immediate next step:
+    - trace the slow request from the admin dashboard/users page to its API route or direct Supabase query, then inspect the related SQL/RPC/view definitions for avoidable scans, joins, or fallback logic
+- Done:
+  - Important conclusion from the prior Telegram keyboard investigation:
     - the Bot API does not provide a server-side switch to make `ReplyKeyboardMarkup` permanently unhideable
     - `is_persistent` is only a request to the client, not an enforceable lock
+  - Repo-grounded performance findings for the latest SQL/API review:
+    - the slow browser request shown as `admin_users?select=role...` is very likely the client-side admin-role lookup rather than the inner analytics RPC itself:
+      - `components/AppShell.tsx` performs `supabase.auth.getSession()` and then direct browser query `.from("admin_users").select("role").eq("user_id", session.user.id).maybeSingle()`
+      - `components/WebsiteShell.tsx` duplicates the same pattern
+      - some pages such as `app/(admin)/products/page.tsx` still issue another direct `admin_users` role query on top of the shell check
+    - server-side admin APIs also repeat an admin-role lookup before doing the real work:
+      - `app/api/_shared/adminAuth.ts` calls `.from("admin_users").select("role").maybeSingle()` on every admin API request
+      - this means a cold page load can pay redundant admin checks on both client and server even though `admin_users` itself is tiny
+    - the current Users analytics path is still not fully optimized:
+      - `app/api/_shared/adminAnalytics.ts` falls back to `loadUsersFilteredSortedFallback(...)` whenever `filterMode !== "all"` or `sortMode !== "newest"`
+      - that fallback performs broad application-side loading/hydration instead of staying in the SQL RPC path
+    - the current `admin_bot_users_snapshot_page` RPC is better than the legacy path, but not maximum optimization:
+      - it evaluates the same search predicate twice (count + page rows)
+      - it uses leading-wildcard search on `user_id::text`, `lower(username)`, and computed display name, which will not use normal btree indexes efficiently
+      - it still uses `offset` pagination, which degrades as page numbers grow
+    - the current dashboard snapshot RPC still recalculates full-table `count(*)` and `sum(price)` on cache misses instead of reading from a pre-aggregated stats source
+- Done:
+  - User accepted the findings and wants to continue toward the optimization work.
+- Now:
+  - Current task is to turn the performance findings into a concrete implementation plan.
+  - Remaining key decision:
+    - whether to keep the optimization batch low-risk/incremental (remove redundant client admin checks + expand existing RPCs) or include a deeper architecture change to move admin layout/data bootstrapping server-side and eliminate the client waterfall more aggressively
+- Done:
+  - User chose the low-risk incremental optimization direction for this batch:
+    - remove redundant client-side admin checks
+    - expand existing SQL/API snapshot paths so Users stays on RPC instead of broad fallback scans
+- Now:
+  - Current task has moved from planning to implementation of the low-risk performance batch.
+  - Immediate execution focus:
+    - add shared admin session bootstrap endpoint/client state so shells stop querying `admin_users` directly from the browser
+    - add `admin_bot_users_snapshot_page_v2` SQL migration and wire the Users API to prefer it before legacy fallbacks
+- Done:
+  - Implemented shared admin session bootstrap for dashboard shells:
+    - `app/api/_shared/adminAuth.ts` now returns `userId`, `email`, and `role` in addition to the authenticated Supabase client/token
+    - new admin bootstrap endpoint `app/api/admin/session/route.ts` returns `{ userId, email, role }` and emits `Server-Timing`
+    - new client helper `lib/adminSessionClient.ts` fetches/caches the bootstrap payload
+    - new shared context `components/AdminSessionContext.tsx` provides admin session data to child pages
+    - `components/AppShell.tsx` and `components/WebsiteShell.tsx` no longer query `admin_users` directly from the browser; they now call `/api/admin/session`
+    - `app/(admin)/products/page.tsx` and `app/(website-dashboard)/website/products/page.tsx` no longer issue page-level `admin_users` role lookups; they read `role` from shared admin session context instead
+  - Implemented Users snapshot v2 SQL/API path:
+    - added new SQL migration file `supabase_schema_bot_admin_users_snapshot_v2.sql`
+    - migration adds `pg_trgm` functional indexes for username, display-name expression, and `user_id::text`
+    - migration adds new function `public.admin_bot_users_snapshot_page_v2(integer, integer, text, text, text) returns jsonb`
+    - `app/api/_shared/adminAnalytics.ts` now tries `admin_bot_users_snapshot_page_v2` first, then only uses the old RPC/default fallbacks when the new function is unavailable
+    - `app/api/admin-analytics/users/route.ts` cache key was bumped from `v3` to `v4`
+- Done:
+  - Verification results for the low-risk performance batch:
+    - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc --noEmit -p .\\admin_dashboard_telegram_bot\\tsconfig.json` passed
+    - search check confirms browser-side `admin_users.select("role")` queries were removed from dashboard shells and products pages; remaining `admin_users` reads are server-side only (`adminAuth` and stock custom-check API)
+- Now:
+  - Code changes for the low-risk performance batch are complete in repo.
+  - Immediate next useful step:
+    - apply `supabase_schema_bot_admin_users_snapshot_v2.sql` on Supabase, then re-measure cold-load timing for `/api/admin/session` and `/api/admin-analytics/users`
+- Done:
+  - User asked to fold the new Users performance SQL into the all-in-one bootstrap file so the database can be updated in one run.
+- Now:
+  - Current task is to merge the `admin_bot_users_snapshot_page_v2` migration content into `supabase_schema_all_in_one.sql` in a rerunnable, correctly ordered way.
+- Done:
+  - Merged the Users performance SQL into the all-in-one bootstrap file:
+    - `supabase_schema_all_in_one.sql` now includes a new dedicated section `supabase_schema_bot_admin_users_snapshot_v2.sql`
+    - the all-in-one file now contains:
+      - `create extension if not exists pg_trgm with schema extensions`
+      - trigram indexes for username, computed display name, and `user_id::text`
+      - function `public.admin_bot_users_snapshot_page_v2(integer, integer, text, text, text) returns jsonb`
+      - grant execute for the new function
+    - the new section was inserted immediately after the existing admin analytics performance section so ordering remains safe for bootstrap usage
+- Now:
+  - The requested all-in-one SQL merge is complete in repo.
+  - Immediate next useful step:
+    - run `supabase_schema_all_in_one.sql` once on Supabase, then verify `/api/admin/session` and `/api/admin-analytics/users` timing in the browser
+- Done:
+  - User hit SQL bootstrap error while running the updated all-in-one file:
+    - `ERROR: 42P17: functions in index expression must be marked IMMUTABLE`
+  - Root cause identified:
+    - the new trigram index `users_display_name_trgm_idx` used `concat_ws(...)` inside the index expression
+    - `concat_ws` is not `IMMUTABLE`, so Postgres rejects it in index expressions
+  - Applied the fix:
+    - replaced the display-name index expression with an immutable-safe concatenation using `coalesce(first_name, '') || ' ' || coalesce(last_name, '')` plus `btrim(...)`
+    - made the same expression change in both:
+      - `supabase_schema_bot_admin_users_snapshot_v2.sql`
+      - `supabase_schema_all_in_one.sql`
+    - also aligned `display_name` / `display_name_search` inside `admin_bot_users_snapshot_page_v2(...)` to use the same immutable-safe expression
+- Now:
+  - The SQL bootstrap error fix is complete in repo.
+  - Immediate next useful step:
+    - rerun `supabase_schema_all_in_one.sql`; the `users_display_name_trgm_idx` creation should now pass
 
 Open Questions:
 
@@ -2488,3 +2631,183 @@ Notes:
 - `npm -C admin-dashboard run lint` prompts for initial ESLint setup (interactive), so it was not run.
 - Important: functions with changed return table shape in Postgres require `DROP FUNCTION ...` then `CREATE FUNCTION`; `CREATE OR REPLACE` is not enough.
 - Latest explicit user constraint: new SQL must be added in new SQL files, not old SQL files.
+- Latest explicit folder-feature decisions:
+  - use a separate folder table instead of storing plain folder-name text on each product
+  - keep foldering one-level only
+  - apply foldering to Telegram Bot only, not Website
+  - products without a folder must remain visible at bot top-level
+
+- Done:
+  - Repo-grounded planning for Telegram Bot product folders is complete:
+    - current bot catalog is still a flat list driven by `get_products()` -> `products_keyboard(...)`
+    - Bot Dashboard `Products` page still mutates `products` directly and currently has no folder/category fields
+    - both SQLite and Supabase database backends need matching folder support because `database/__init__.py` switches between them
+    - `/start`, language switch, `show_shop(...)`, and `back_to_main(...)` all open the shop and must share the new catalog rendering
+- Now:
+  - Current execution task is implementing Telegram Bot product folders end-to-end.
+  - Immediate next step:
+    - add SQL/schema support and shared database helpers first, then wire Dashboard Products UI and the bot folder navigation callbacks on top
+- Done:
+  - Implemented Telegram Bot folder schema/bootstrap support:
+    - added new split SQL file `supabase_schema_bot_product_folders.sql`
+    - created table `public.bot_product_folders` with case-insensitive unique name index and sort index
+    - added nullable `public.products.bot_folder_id` with `on delete set null` FK semantics
+    - added `products(bot_folder_id, sort_position, id)` index
+    - enabled RLS and admin-only access policy for `bot_product_folders`
+    - extended `public.get_products_with_stock()` and `public.get_product_with_stock(bigint)` to return `bot_folder_id`
+    - merged the same section into `supabase_schema_all_in_one.sql`
+- Done:
+  - Implemented shared folder-aware product reads/writes across both database backends:
+    - `database/db.py` now creates/migrates `bot_product_folders`, exposes `get_bot_product_folders()`, and reads/writes `bot_folder_id` on products
+    - `database/supabase_db.py` now exposes `get_bot_product_folders()` and reads/writes `bot_folder_id` on products with compatibility fallbacks
+- Done:
+  - Implemented bot-side two-level shop catalog flow:
+    - `helpers/shop_catalog.py` now builds top-level folder view and folder-detail view
+    - `keyboards/inline.py` now supports folder buttons on top-level and dedicated folder pagination/back keyboard
+    - `handlers/shop.py` now renders top-level shop via shared helper and supports callback `shopfolder_{folderId}_{folderPage}_{originTopPage}`
+    - `handlers/start.py` entrypoints (`/start`, language switch, `back_to_main`) now reuse the same top-level catalog renderer
+    - `run.py` now registers the new `shopfolder_*` callback handler
+- Now:
+  - Current execution task is finishing the Dashboard side of Telegram Bot product folders.
+  - Immediate next step:
+    - patch `admin_dashboard_telegram_bot/app/(admin)/products/page.tsx` to add folder CRUD, product-folder assignment fields, and folder display in the products table
+- Done:
+  - Implemented Dashboard Products support for Telegram Bot folders:
+    - `admin_dashboard_telegram_bot/app/(admin)/products/page.tsx` now loads `bot_product_folders`
+    - added folder CRUD UI (create, edit, delete with confirmation)
+    - deleting a folder now unassigns `products.bot_folder_id` instead of deleting products
+    - add/edit product forms now support optional `Folder Bot` assignment
+    - products table now shows the assigned bot folder name
+- Done:
+  - Fixed integration regression while wiring the new bot callback:
+    - corrected indentation in `run.py` callback registration block after adding `show_shop_folder`
+- Done:
+  - Verification for the Telegram Bot folder feature batch:
+    - TypeScript check passed:
+      - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc.cmd --noEmit -p .\\tsconfig.json`
+    - Python AST parse passed for:
+      - `run.py`
+      - `handlers/shop.py`
+      - `handlers/start.py`
+      - `helpers/shop_catalog.py`
+      - `keyboards/inline.py`
+      - `database/db.py`
+      - `database/supabase_db.py`
+- Now:
+  - The Telegram Bot folder feature is implemented in repo across SQL, database backends, dashboard UI, and bot navigation flow.
+  - Immediate next useful step:
+    - apply the new folder SQL on the real database (`supabase_schema_bot_product_folders.sql` or updated `supabase_schema_all_in_one.sql`) and verify the folder CRUD/shop flow live in Telegram and Dashboard
+- Done:
+  - New user request captured for license management:
+    - `LicenseKeys` should support keys that can activate on multiple devices
+    - user also wants a mode with no device limit
+- Now:
+  - Current execution task is implementing per-license multi-device activation support in the existing license-management system.
+  - Immediate next step:
+    - inspect current license SQL schema, admin dashboard `LicenseKeys` UI, and activate/validate API logic to find where single-fingerprint binding is enforced and then patch all layers consistently
+- Done:
+  - Implemented per-license multi-device activation support across dashboard/API contracts:
+    - `admin_dashboard_telegram_bot/lib/licenseTypes.ts` now includes per-key `deviceLimitMode`, `activeActivationCount`, and `activeActivations`
+    - `admin_dashboard_telegram_bot/app/api/_shared/license.ts` now loads all active activations per key instead of assuming exactly one active fingerprint
+    - `admin_dashboard_telegram_bot/app/api/licenses/keys/route.ts` now saves per-key `deviceLimitMode` (`single_device` / `unlimited_devices`)
+    - when admin changes a key back to `single_device`, extra active activations are auto-reset so the key state stays consistent
+- Done:
+  - Implemented admin UX for the new license behavior:
+    - `admin_dashboard_telegram_bot/app/(admin)/licenses/page.tsx` now lets admin choose `1 thiết bị` or `Không giới hạn thiết bị` when creating/editing a key
+    - keys table now shows device mode, active bind count, and active fingerprint summary
+    - added per-activation reset API `admin_dashboard_telegram_bot/app/api/licenses/activations/[id]/reset/route.ts`
+    - activations tab can now reset only the selected activation instead of always resetting all binds on the key
+- Done:
+  - Added new SQL migration file `supabase_schema_license_multi_device_keys.sql`:
+    - adds `license_keys.device_limit_mode`
+    - drops the old unique-active-key index that forced exactly one active activation per key
+    - adds unique active `(license_key_id, fingerprint)` index
+    - recreates `public.activate_license_key(...)` so unlimited-device keys can activate multiple fingerprints while default single-device keys still return `fingerprint_mismatch`
+- Done:
+  - Updated integration docs in `LICENSE_API_INTEGRATION.md`:
+    - clarified `single_device` vs `Không giới hạn thiết bị`
+    - documented that unlimited-device keys issue one activation token per fingerprint/install
+    - clarified that `fingerprint_mismatch` only applies to single-device keys
+- Done:
+  - Verification for the license multi-device batch:
+    - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc.cmd --noEmit -p .\\tsconfig.json` passed
+- Now:
+  - Repo changes for per-key multi-device/unlimited-device license activation are complete.
+  - Important deployment requirement:
+    - the new dashboard/API behavior depends on applying `supabase_schema_license_multi_device_keys.sql` to the real Supabase database before using the feature live
+- Next:
+  - Apply `supabase_schema_license_multi_device_keys.sql` on Supabase, then test these live cases:
+    - normal key in `1 thiết bị` mode still rejects a second fingerprint with `fingerprint_mismatch`
+    - key in `Không giới hạn thiết bị` mode can activate on multiple fingerprints and each install receives its own activation token
+    - resetting a single activation from the Activations tab only deactivates that one fingerprint/token
+
+- Current scope add-on (latest request): investigate why extension License Key API calls return HTTP 500:
+  - User reports real extension request to `https://www.admin.destiny-mmo.com/api/licenses/activate` with `fingerprint=suno_auto_hit:hipfehkjpedlheipoppkmmaialaimdno` and `extensionCode=AUTO_HIT_SUNO` returns `500 {"error":"Không thể kích hoạt license."}`.
+  - User also tested `www.admin.destiny-mmo.com` and `admin.destiny-mmo.com`, multiple `extensionCode` values, and `/api/licenses/validate` with a dummy token; these return 500, while missing-field payloads correctly return 400.
+  - The extension popup saying `License Key không hợp lệ` is likely misleading because the API is failing server-side instead of returning a typed invalid-license result.
+- Now:
+  - Current task is a repo-grounded diagnosis of the license activate/validate 500 path.
+  - Immediate execution focus:
+    - inspect `admin_dashboard_telegram_bot` license API routes and shared license helpers
+    - inspect license SQL/RPC migration files for schema/function mismatch risks
+    - verify TypeScript/static checks where practical
+    - identify the concrete fix or deployment step needed for the live API
+- Open Questions:
+  - Whether the live Supabase database has already run `supabase_schema_license_multi_device_keys.sql` and any earlier license schema files is **UNCONFIRMED**.
+- Investigation notes:
+  - Local `rg` execution is blocked with Windows access denied in the Codex app runtime, so this turn uses PowerShell search commands instead.
+  - `git status --short` shows a dirty worktree with many prior tracked/untracked changes; license/API investigation must preserve unrelated changes.
+  - `supabase_schema_all_in_one.sql` currently contains no `license_*` schema/function section; production environments bootstrapped from only this file would be missing the license tables/RPCs needed by `/api/licenses/activate` and `/api/licenses/validate`.
+  - Local env files contain the Supabase URL/service-role variable names needed for a live RPC smoke test, but secret values must not be printed.
+  - Live Supabase RPC smoke test against `validate_license_activation(...)` reached Supabase and returned sanitized error metadata:
+    - message: `Legacy API keys are disabled`
+    - hint: legacy `anon`/`service_role` keys were disabled on `2026-04-19T13:30:09.006074+00:00`; use new publishable/secret API keys or re-enable legacy keys in Supabase.
+  - Primary confirmed cause for production `/api/licenses/activate` and `/api/licenses/validate` HTTP 500: current server env still uses a disabled legacy Supabase service-role API key.
+  - Code search shows admin/storefront server clients currently only read `SUPABASE_SERVICE_ROLE_KEY`; examples also only mention legacy-style anon/service-role naming.
+- Key decision:
+  - Patch server-side Supabase admin clients to accept a new `SUPABASE_SECRET_KEY` env variable while keeping `SUPABASE_SERVICE_ROLE_KEY` as backward-compatible fallback.
+  - Patch license public routes to return a service-unavailable error code for infrastructure/RPC failures so extensions should not treat HTTP 500/503 as `license key invalid`.
+- Done:
+  - Patched admin dashboard and storefront Supabase clients to prefer new `SUPABASE_SECRET_KEY` / `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` env vars while keeping legacy env names as fallback.
+  - Patched Python Supabase helper/migration tooling to accept `SUPABASE_SECRET_KEY` / `SUPABASE_PUBLISHABLE_KEY` with legacy fallbacks.
+  - Patched public license activate/validate routes to log sanitized RPC/service errors server-side and return HTTP 503 with `code: "license_service_unavailable"` instead of generic HTTP 500.
+  - Updated env examples/docs to use new Supabase publishable/secret key names and documented that extensions must not map HTTP 503/5xx license-service failures to `License Key không hợp lệ`.
+  - Verification:
+    - `admin_dashboard_telegram_bot` TypeScript check passed.
+    - `storefront-web` TypeScript check passed.
+    - Python bytecode compile failed due Windows access denied writing `database/__pycache__`, so no-write AST parse was used instead and passed for `database/supabase_client.py` and `scripts/migrate_sqlite_to_supabase.py`.
+- Next:
+  - Production must replace disabled legacy Supabase keys in deploy env:
+    - set `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` to the new publishable key
+    - set `SUPABASE_SECRET_KEY` to the new server-side secret key
+    - redeploy/restart the admin dashboard and storefront services
+  - After key replacement, smoke test `/api/licenses/validate` again; if Supabase then reports missing RPC/schema, apply `supabase_schema_license_management.sql` followed by `supabase_schema_license_multi_device_keys.sql`.
+
+- Current scope add-on (latest request): diagnose/fix Dashboard admin login denial after Supabase key update:
+  - User now sees:
+    - `Không có quyền truy cập`
+    - `Tài khoản này chưa được cấp quyền admin.`
+    - `User ID: 7a3d3c09-3372-4d51-a7d6-48ac2897d997`
+    - `Lỗi RLS: Forbidden.`
+  - This likely comes from the admin bootstrap/session authorization path, not the public License API path.
+- Now:
+  - Current task is to inspect admin dashboard session/RLS flow and identify whether this is missing `admin_users` membership, RLS policy mismatch, or a code issue after moving to new Supabase publishable/secret keys.
+- Open Questions:
+  - Whether user `7a3d3c09-3372-4d51-a7d6-48ac2897d997` exists in `public.admin_users` with role `admin` or `superadmin` is **UNCONFIRMED**.
+- Diagnosis:
+  - The access-denied UI is produced by `components/AppShell.tsx` / `components/WebsiteShell.tsx` after `/api/admin/session` returns non-OK.
+  - `/api/admin/session` uses `requireAdminSession(...)`.
+  - Before this fix, `requireAdminSession(...)` checked admin rights by reading `public.admin_users` through the user-scoped Supabase client/RLS, so a missing admin row, RLS policy issue, or new-key behavior could all appear as `Forbidden`.
+- Done:
+  - Patched `admin_dashboard_telegram_bot/app/api/_shared/adminAuth.ts`:
+    - validates the Bearer token with Supabase Auth first
+    - reads the exact `admin_users.user_id` row using the server-side admin/secret Supabase client instead of relying on user-RLS for the bootstrap check
+    - still returns a user-scoped Supabase client for downstream admin APIs
+  - Patched `admin_dashboard_telegram_bot/app/api/stock/custom-check/route.ts` to reuse `requireAdminSession(...)` instead of duplicating the older RLS-based admin check.
+  - Verification:
+    - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc.cmd --noEmit -p .\\tsconfig.json` passed.
+- Next:
+  - Deploy/restart Admin Dashboard with `SUPABASE_SECRET_KEY` set.
+  - If the same user still sees access denied after deploy, add or update the admin row:
+    - `public.admin_users.user_id = 7a3d3c09-3372-4d51-a7d6-48ac2897d997`
+    - role should be `admin` or `superadmin`.

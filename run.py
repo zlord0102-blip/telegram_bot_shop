@@ -21,7 +21,7 @@ from handlers.start import (
     delete_message,
 )
 from handlers.shop import (
-    show_shop, show_product, confirm_buy, show_account,
+show_shop, show_shop_folder, show_product, confirm_buy, show_account,
     show_history, show_deposit, process_deposit, handle_deposit_text,
     handle_shop_text, process_deposit_amount,
     handle_withdraw_text, process_withdraw_amount, process_withdraw_bank, process_withdraw_account,
@@ -309,6 +309,7 @@ def setup_bot():
     app.add_handler(CallbackQueryHandler(delete_message, pattern="^delete_msg$"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_main$"))
     app.add_handler(CallbackQueryHandler(show_shop, pattern="^shop(?:_\\d+)?$"))
+    app.add_handler(CallbackQueryHandler(show_shop_folder, pattern="^shopfolder_\\d+_\\d+_\\d+$"))
     app.add_handler(CallbackQueryHandler(show_product, pattern="^buy_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_vnd, pattern="^pay_vnd_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_usdt, pattern="^pay_usdt_\\d+$"))

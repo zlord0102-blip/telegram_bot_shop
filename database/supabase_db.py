@@ -221,6 +221,21 @@ def _sort_products_by_position(products: List[Dict[str, Any]]) -> List[Dict[str,
     return sorted(products, key=_product_sort_key)
 
 
+def _folder_sort_key(folder: Dict[str, Any]):
+    sort_position = _safe_optional_int(folder.get("sort_position"))
+    folder_id = _safe_optional_int(folder.get("id"))
+    id_fallback = folder_id if folder_id is not None else 10**12
+    return (
+        1 if sort_position is None else 0,
+        sort_position if sort_position is not None else 10**11,
+        id_fallback,
+    )
+
+
+def _sort_folders_by_position(folders: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(folders, key=_folder_sort_key)
+
+
 async def _fetch_product_positions(product_ids: List[Any]) -> Dict[str, Optional[int]]:
     ids = [pid for pid in product_ids if pid is not None]
     if not ids:
@@ -512,6 +527,7 @@ async def get_products():
                 "promo_buy_quantity": _safe_int(row.get("promo_buy_quantity")),
                 "promo_bonus_quantity": _safe_int(row.get("promo_bonus_quantity")),
                 "sort_position": position_map.get(str(product_id), _safe_optional_int(row.get("sort_position"))),
+                "bot_folder_id": _safe_optional_int(row.get("bot_folder_id")),
             })
         return _sort_products_by_position(products)
     except Exception:
@@ -519,7 +535,7 @@ async def get_products():
         def _fetch():
             try:
                 return _get_table("products").select(
-                    "id, name, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position"
+                    "id, name, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id"
                 ).eq("is_deleted", False).eq("is_hidden", False).order("id").execute()
             except Exception:
                 return _get_table("products").select(
@@ -549,8 +565,28 @@ async def get_products():
                 "promo_buy_quantity": _safe_int(row.get("promo_buy_quantity")),
                 "promo_bonus_quantity": _safe_int(row.get("promo_bonus_quantity")),
                 "sort_position": _safe_optional_int(row.get("sort_position")),
+                "bot_folder_id": _safe_optional_int(row.get("bot_folder_id")),
             })
         return _sort_products_by_position(products)
+
+
+async def get_bot_product_folders():
+    def _fetch():
+        return _get_table("bot_product_folders").select("id, name, sort_position").order("id").execute()
+
+    try:
+        resp = await _to_thread(_fetch)
+    except Exception:
+        return []
+
+    folders = []
+    for row in resp.data or []:
+        folders.append({
+            "id": row.get("id"),
+            "name": row.get("name"),
+            "sort_position": _safe_optional_int(row.get("sort_position")),
+        })
+    return _sort_folders_by_position(folders)
 
 
 async def get_product(product_id: int):
@@ -575,12 +611,13 @@ async def get_product(product_id: int):
             "promo_buy_quantity": _safe_int(row.get("promo_buy_quantity")),
             "promo_bonus_quantity": _safe_int(row.get("promo_bonus_quantity")),
             "sort_position": _safe_optional_int(row.get("sort_position")),
+            "bot_folder_id": _safe_optional_int(row.get("bot_folder_id")),
         }
     except Exception:
         def _fetch():
             try:
                 return _get_table("products").select(
-                    "id, name, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position"
+                    "id, name, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id"
                 ).eq(
                     "id", product_id
                 ).eq(
@@ -616,6 +653,7 @@ async def get_product(product_id: int):
             "promo_buy_quantity": _safe_int(row.get("promo_buy_quantity")),
             "promo_bonus_quantity": _safe_int(row.get("promo_bonus_quantity")),
             "sort_position": _safe_optional_int(row.get("sort_position")),
+            "bot_folder_id": _safe_optional_int(row.get("bot_folder_id")),
         }
 
 
@@ -629,6 +667,7 @@ async def add_product(
     promo_buy_quantity: int = 0,
     promo_bonus_quantity: int = 0,
     sort_position: Optional[int] = None,
+    bot_folder_id: Optional[int] = None,
 ):
     shifted_rows: list[tuple[int, int]] = []
 
@@ -665,6 +704,7 @@ async def add_product(
             "promo_buy_quantity": promo_buy_quantity,
             "promo_bonus_quantity": promo_bonus_quantity,
             "sort_position": sort_position,
+            "bot_folder_id": bot_folder_id,
         }
         try:
             return _get_table("products").insert(payload).execute()
