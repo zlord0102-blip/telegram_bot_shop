@@ -3695,3 +3695,35 @@ Notes:
   - Deploy/restart production bot, then monitor logs for remaining Telegram `NetworkError` or callback expiry messages.
 - Open Questions:
   - Whether production has additional stack traces beyond the two pasted errors is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): fix remaining production SSL verify failure when `sepay_checker` calls relay notification API after payment success.
+- User evidence:
+  - Screenshot log shows `sepay_checker - WARNING - __Relay notify exception: Cannot connect to host api.telegram.org:443 ssl:True [SSLCertVerificationError: self-signed certificate in certificate chain]`.
+  - Delivery still succeeded afterward (`Delivery send success`), but relay notification API call fails.
+- Constraints / assumptions:
+  - Problem is in SePay checker/relay notification HTTP path, separate from the Telegram SDK send retry patch.
+  - Prefer explicit SSL context using `certifi` and configurable fallback for Windows/proxy environments with self-signed interception.
+  - Do not disable SSL verification globally by default; allow a targeted opt-in env only for the relay notification path if the production network requires it.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Latest SePay relay SSL failure captured in the continuity ledger.
+  - Inspected `sepay_checker.py`; relay notification uses direct `aiohttp.ClientSession().post(...)` to `https://api.telegram.org/bot.../sendMessage`, separate from the Telegram SDK send path.
+  - Added explicit relay SSL handling in `sepay_checker.py`:
+    - uses `certifi.where()` by default for the relay `aiohttp` SSL context.
+    - supports `PAYMENT_RELAY_CA_BUNDLE` / `SSL_CERT_FILE` / `REQUESTS_CA_BUNDLE` for a production/internal CA bundle.
+    - supports targeted fallback `PAYMENT_RELAY_SSL_NO_VERIFY=true` only for payment relay notify.
+    - adds `PAYMENT_RELAY_TIMEOUT_SECONDS`.
+    - logs a clearer certificate-specific warning with the suggested env remediation.
+  - Updated `.env.example` with the relay SSL/timeout envs.
+  - Verification completed:
+    - Python AST parse passed for `sepay_checker.py`.
+    - `import sepay_checker` passed with default relay SSL verify enabled.
+    - `PAYMENT_RELAY_SSL_NO_VERIFY=true` test confirmed the relay SSL context becomes `False`.
+    - `git diff --check` passed for `sepay_checker.py`, `.env.example`, and `CONTINUITY.md` with only existing LF/CRLF normalization warnings.
+- Now:
+  - Summarize the patch and exact production env options.
+- Next:
+  - Deploy/restart production bot; if default certifi context still fails, set `PAYMENT_RELAY_CA_BUNDLE` to the trusted internal CA PEM or temporarily set `PAYMENT_RELAY_SSL_NO_VERIFY=true`.
+- Open Questions:
+  - Whether production has a corporate/VPS TLS interception CA that should be trusted via a custom CA bundle is **UNCONFIRMED**.

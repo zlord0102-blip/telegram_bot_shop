@@ -7,8 +7,10 @@ import os
 import io
 import json
 import logging
+import ssl
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+import certifi
 from config import SEPAY_API_TOKEN
 from helpers.binance_client import BinanceApiError, BinanceConfigError, get_binance_direct_runtime
 from helpers.sepay_state import has_latest_vietqr_message, mark_bot_message
@@ -68,6 +70,21 @@ def _env_positive_int(name: str, default: int) -> int:
         return default
 
 
+def _env_positive_float(name: str, default: float) -> float:
+    raw = os.getenv(name, str(default))
+    try:
+        return max(0.1, float(str(raw).strip()))
+    except (TypeError, ValueError):
+        return default
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
 SEPAY_DEFAULT_LIMIT = _env_positive_int("SEPAY_DEFAULT_LIMIT", 200)
 DIRECT_ORDER_PENDING_EXPIRE_MINUTES = _env_positive_int("DIRECT_ORDER_PENDING_EXPIRE_MINUTES", 10)
 DIRECT_ORDER_PENDING_EXPIRE_SECONDS = DIRECT_ORDER_PENDING_EXPIRE_MINUTES * 60
@@ -77,9 +94,12 @@ _BINANCE_AMOUNT_QUANT = Decimal("0.000001")
 BOT_DELIVERY_RETRY_BASE_SECONDS = _env_positive_int("BOT_DELIVERY_RETRY_BASE_SECONDS", 60)
 BOT_DELIVERY_RETRY_MAX_SECONDS = _env_positive_int("BOT_DELIVERY_RETRY_MAX_SECONDS", 30 * 60)
 BOT_DELIVERY_RETRY_BATCH_LIMIT = _env_positive_int("BOT_DELIVERY_RETRY_BATCH_LIMIT", 20)
+PAYMENT_RELAY_TIMEOUT_SECONDS = _env_positive_float("PAYMENT_RELAY_TIMEOUT_SECONDS", 20.0)
+PAYMENT_RELAY_SSL_VERIFY = not _env_bool("PAYMENT_RELAY_SSL_NO_VERIFY", False)
 logger = logging.getLogger(__name__)
 _SEPAY_TOKEN_WARNED = False
 _SEPAY_TOKEN_OK = False
+_PAYMENT_RELAY_SSL_WARNING_LOGGED = False
 
 
 def make_file(items: list, header: str = "") -> io.BytesIO:
@@ -109,6 +129,34 @@ async def get_payment_relay_target():
     return token, chat_id
 
 
+def _build_payment_relay_ssl_context():
+    global _PAYMENT_RELAY_SSL_WARNING_LOGGED
+
+    if not PAYMENT_RELAY_SSL_VERIFY:
+        if not _PAYMENT_RELAY_SSL_WARNING_LOGGED:
+            logger.warning(
+                "PAYMENT_RELAY_SSL_NO_VERIFY is enabled; SSL verification is disabled only for payment relay notify."
+            )
+            _PAYMENT_RELAY_SSL_WARNING_LOGGED = True
+        return False
+
+    ca_bundle = (
+        os.getenv("PAYMENT_RELAY_CA_BUNDLE", "").strip()
+        or os.getenv("SSL_CERT_FILE", "").strip()
+        or os.getenv("REQUESTS_CA_BUNDLE", "").strip()
+        or certifi.where()
+    )
+    try:
+        return ssl.create_default_context(cafile=ca_bundle)
+    except Exception as exc:
+        logger.warning(
+            "Unable to load payment relay CA bundle %s (%s); falling back to certifi.",
+            ca_bundle,
+            exc,
+        )
+        return ssl.create_default_context(cafile=certifi.where())
+
+
 async def send_payment_relay_notification(relay_token: str, relay_chat_id: int | None, text: str):
     if not relay_token or relay_chat_id is None:
         return False
@@ -119,9 +167,12 @@ async def send_payment_relay_notification(relay_token: str, relay_chat_id: int |
         "text": str(text or "").strip(),
     }
 
-    async with aiohttp.ClientSession() as session:
+    timeout = aiohttp.ClientTimeout(total=PAYMENT_RELAY_TIMEOUT_SECONDS)
+    ssl_context = _build_payment_relay_ssl_context()
+
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
-            async with session.post(url, json=payload) as resp:
+            async with session.post(url, json=payload, ssl=ssl_context) as resp:
                 if resp.status != 200:
                     body = await resp.text()
                     logger.warning("Relay notify failed (HTTP %s): %s", resp.status, body[:200])
@@ -131,6 +182,14 @@ async def send_payment_relay_notification(relay_token: str, relay_chat_id: int |
                     logger.warning("Relay notify failed: %s", data)
                     return False
                 return True
+        except aiohttp.ClientConnectorCertificateError as e:
+            logger.warning(
+                "Relay notify SSL verification failed: %s. "
+                "Install the intercepting CA and set PAYMENT_RELAY_CA_BUNDLE, "
+                "or temporarily set PAYMENT_RELAY_SSL_NO_VERIFY=true only for this relay path.",
+                e,
+            )
+            return False
         except Exception as e:
             logger.warning("Relay notify exception: %s", e)
             return False
