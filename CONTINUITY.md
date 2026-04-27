@@ -3635,3 +3635,63 @@ Notes:
   - Restart/redeploy the Telegram Bot runtime so the environment uses the installed dependency.
 - Open Questions:
   - Deployment appears to use root `requirements.txt`; no other active Python dependency file was found outside ignored generated/vendor directories.
+
+- Current scope add-on (latest request): fix GitHub push protection block in nested `admin_dashboard_telegram_bot` repo caused by a Supabase Secret Key committed to `.env.example:4`.
+- Constraints / assumptions:
+  - Do not print or expose actual secret values.
+  - Work in nested repo `admin_dashboard_telegram_bot` because the failed push target is `zlord0102-blip/admin_dashboard_telegram_bot`.
+  - Remove secret from the current file and from local commit history before pushing again; a normal follow-up commit is not enough because GitHub scans all pushed commits.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Latest push-protection failure captured in the continuity ledger.
+  - Initial nested Git inspection was blocked by Git dubious-ownership protection; will use per-command `-c safe.directory=D:/MMO/telegram_bot_shop/admin_dashboard_telegram_bot` instead of changing global Git config.
+  - Nested repo `main` is clean and exactly 1 commit ahead of `origin/main`.
+  - Offending commit `adb90386e88106cdf8227115c6f05f2fcab976bd` is current `HEAD`, so fixing can be done by amending the single local unpushed commit.
+  - Redacted `.env.example` inspection confirms `SUPABASE_SECRET_KEY` is present at line 4; actual values were not printed.
+  - Sanitized `admin_dashboard_telegram_bot/.env.example` so all env values are placeholders.
+  - Worktree scan excluding `.env`, `.env.local`, `.git`, `node_modules`, and `.next` found no `sb_secret_`, `sb_publishable_`, `SUPABASE_SERVICE_ROLE_KEY=`, or `SUPABASE_ANON_KEY=` pattern hits.
+  - Sandboxed `git add .env.example` failed with `.git/index.lock` permission denied; reran with approved escalation and staged successfully.
+  - Amended the single unpushed commit successfully; new `HEAD` is `c8d9dda` with the same commit message.
+  - Verified unpushed commit range `origin/main..HEAD` has no hits for the checked secret patterns.
+  - Pushed nested repo `main` successfully to GitHub: `96c1edd..c8d9dda`.
+  - Post-push verification shows `main` and `origin/main` are synchronized (`0 0`) and the nested worktree is clean.
+- Now:
+  - Summarize the fix, push result, and secret-rotation recommendation.
+- Next:
+  - Rotate the previously exposed Supabase Secret Key in Supabase and update private runtime environments with the new value.
+- Open Questions:
+  - Whether the leaked Supabase Secret Key has already been rotated is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): stabilize production Telegram Bot errors from `CallbackQuery.answer()` timeout/invalid query and Telegram `httpx.ReadError` network failures.
+- User evidence:
+  - Production stack trace from `handlers/shop.py:2951 show_history` at `await query.answer()` raises `telegram.error.BadRequest: Query is too old and response timeout expired or query id is invalid`.
+  - Production stack trace from `handlers/shop.py` buy quantity flow raises `telegram.error.NetworkError: httpx.ReadError` while sending `message.reply_text(...)`.
+- Constraints / assumptions:
+  - Implement resilience in this repository; production path `C:\Users\Administrator\Desktop\dung` appears to be a deployed copy of the same bot code.
+  - Do not hide real business logic errors, but suppress/soft-log known Telegram callback expiry and transient network send failures where safe.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Latest production stability request captured in the continuity ledger.
+  - Added `helpers/telegram_resilience.py`:
+    - `safe_answer_callback_query(...)` catches known stale/invalid callback query `BadRequest` responses and transient answer network failures.
+    - `telegram_api_call(...)` retries short Telegram API calls on `NetworkError`, `TimedOut`, and `RetryAfter`.
+  - Replaced direct `await query.answer(...)` calls in `handlers/shop.py`, `handlers/start.py`, and `handlers/admin.py` with `safe_answer_callback_query(...)`.
+  - Wrapped the direct-payment prompt and direct payment message/photo sends in `handlers/shop.py` with `telegram_api_call(...)`; this covers the pasted `prompt_direct_payment_options.reply_text` production failure path.
+  - Added `handle_application_error(...)` to `run.py` and registered it with `app.add_error_handler(...)`, so expected Telegram stale-callback/network errors no longer produce "No error handlers are registered" tracebacks.
+  - Made Telegram connect/read/write/pool timeouts configurable via env with production defaults: `30/45/45/30`.
+  - Added optional Telegram stability envs to `.env.example`.
+  - Verification completed:
+    - no direct `query.answer(...)` remains in handler files.
+    - no `lambda: ... await ...` pattern remains.
+    - no-write Python AST parse passed for `helpers/telegram_resilience.py`, `handlers/shop.py`, `handlers/start.py`, `handlers/admin.py`, and `run.py`.
+    - `import run` and `run.setup_bot()` passed; setup has an error handler.
+    - helper stale-callback classifier test passed.
+    - `git diff --check` passed for touched paths with only existing LF/CRLF normalization warnings.
+- Now:
+  - Summarize the production stability patch and deployment steps to the user.
+- Next:
+  - Deploy/restart production bot, then monitor logs for remaining Telegram `NetworkError` or callback expiry messages.
+- Open Questions:
+  - Whether production has additional stack traces beyond the two pasted errors is **UNCONFIRMED**.

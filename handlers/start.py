@@ -18,6 +18,7 @@ from helpers.ui import (
 from helpers.history_menu import build_history_menu
 from helpers.menu import delete_last_menu_message, set_last_menu_message, clear_last_menu_message
 from helpers.shop_catalog import build_shop_top_level_view
+from helpers.telegram_resilience import safe_answer_callback_query
 from locales import get_text
 
 
@@ -148,7 +149,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         getattr(user, "last_name", None)
     )
     lang = db_user.get('language', 'vi')
-    
+
     # Nếu user chưa có ngôn ngữ (mới), hiện menu chọn
     if not db_user.get('language') or db_user.get('language') == '':
         keyboard = [
@@ -160,11 +161,11 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
-    
+
     # User đã chọn ngôn ngữ rồi, hiện giao diện bình thường
     welcome_text = get_text(lang, "welcome").format(name=user.first_name)
     select_text = await get_shop_menu_text(lang)
-    
+
     await update.message.reply_text(welcome_text, reply_markup=await get_user_keyboard(lang))
     if not await is_feature_enabled("show_shop"):
         await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.")
@@ -247,20 +248,20 @@ async def handle_change_language(update: Update, context: ContextTypes.DEFAULT_T
 async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xử lý khi user chọn ngôn ngữ"""
     query = update.callback_query
-    await query.answer()
-    
+    await safe_answer_callback_query(query)
+
     user = query.from_user
     lang = query.data.split("_")[2]  # set_lang_vi -> vi
-    
+
     await set_user_language(user.id, lang)
-    
+
     # Lấy text theo ngôn ngữ đã chọn
     lang_text = get_text(lang, "language_set")
     welcome_text = get_text(lang, "welcome").format(name=user.first_name)
     select_text = await get_shop_menu_text(lang)
-    
+
     await query.edit_message_text(f"{lang_text}\n\n{welcome_text}")
-    
+
     # Hiện danh sách sản phẩm với reply keyboard
     await context.bot.send_message(
         chat_id=query.message.chat_id,
@@ -290,7 +291,7 @@ async def handle_history_text(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
     await delete_last_menu_message(context, update.effective_chat.id)
     orders = await get_user_orders(user_id)
-    
+
     if not orders:
         await update.message.reply_text(get_text(lang, "history_empty"))
         return
@@ -315,17 +316,17 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from database import get_balance_usdt
     balance_usdt = await get_balance_usdt(user_id)
     admin_contact = await get_setting("admin_contact", "")
-    
+
     text = get_text(lang, "balance_vnd").format(amount=f"{balance:,}")
     text += "\n" + get_text(lang, "balance_usdt").format(amount=f"{balance_usdt:.2f}")
-    
+
     # Thêm hướng dẫn rút tiền
     admin_text = f"@{admin_contact}" if admin_contact else "admin"
     if lang == 'en':
         text += f"\n\n💸 To withdraw, contact {admin_text}"
     else:
         text += f"\n\n💸 Để rút tiền, liên hệ {admin_text}"
-    
+
     await update.message.reply_text(text)
 
 
@@ -370,7 +371,7 @@ async def handle_support_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def handle_support_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await safe_answer_callback_query(query)
     user_id = query.from_user.id
     lang = await get_user_language(user_id)
     if not await is_feature_enabled("show_support"):
@@ -402,11 +403,11 @@ async def handle_support_callback(update: Update, context: ContextTypes.DEFAULT_
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-    
+    await safe_answer_callback_query(query)
+
     user_id = query.from_user.id
     lang = await get_user_language(user_id)
-    
+
     if not await is_feature_enabled("show_shop"):
         await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.")
         return
@@ -419,7 +420,7 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await safe_answer_callback_query(query)
     try:
         await query.message.delete()
     except Exception:
