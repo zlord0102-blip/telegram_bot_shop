@@ -3,32 +3,41 @@ import os
 import sys
 import logging
 from logging.handlers import RotatingFileHandler
+from telegram import BotCommand, BotCommandScopeChat, BotCommandScopeDefault
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
     ConversationHandler, MessageHandler, filters
 )
-from config import BOT_TOKEN
-from database import init_db, get_setting, log_telegram_message
+from config import ADMIN_IDS, BOT_TOKEN
+from database import init_db
 from handlers.chat_logger import log_incoming_message
 from handlers.start import (
     start_command,
+    help_command,
+    settings_command,
     back_to_main,
     handle_history_text,
     handle_balance,
     handle_support_text,
+    handle_support_callback,
     set_language,
     handle_change_language,
     delete_message,
 )
 from handlers.shop import (
-show_shop, show_shop_folder, show_product, confirm_buy, show_account,
+    show_shop, show_shop_folder, show_product, confirm_buy, show_account,
+    show_sale_catalog, show_sale_product, sale_command,
     show_history, show_deposit, process_deposit, handle_deposit_text,
     handle_shop_text, process_deposit_amount,
     handle_withdraw_text, process_withdraw_amount, process_withdraw_bank, process_withdraw_account,
     handle_buy_quantity, show_order_detail,
-    select_payment_vnd, select_payment_usdt,
+    select_payment_vnd, select_payment_usdt, select_sale_payment_vnd, select_sale_payment_usdt,
     select_quick_quantity, prompt_manual_quantity, prompt_quick_quantity,
+    select_sale_quick_quantity, prompt_sale_manual_quantity, prompt_sale_quick_quantity,
     select_direct_payment_vietqr, select_direct_payment_binance,
+    select_sale_direct_payment_vietqr, select_sale_direct_payment_binance,
+    show_direct_order_status,
+    search_products_command,
     WAITING_DEPOSIT_AMOUNT, WAITING_WITHDRAW_AMOUNT, WAITING_WITHDRAW_BANK, WAITING_WITHDRAW_ACCOUNT
 )
 from handlers.admin import (
@@ -46,6 +55,7 @@ from handlers.admin import (
     BANK_NAME, ACCOUNT_NUMBER, ACCOUNT_NAME, SEPAY_TOKEN, ADMIN_CONTACT, NOTIFICATION_MESSAGE, EDIT_STOCK_CONTENT, SEARCH_USER_ID,
     handle_admin_products_text, handle_admin_stock_text, handle_admin_transactions_text,
     handle_admin_bank_text, handle_exit_admin, notification_command, notification_send,
+    status_command, emoji_id_command,
     admin_manage_stock, admin_view_stock, admin_stock_page, admin_stock_detail,
     admin_edit_stock_start, admin_edit_stock_done, admin_delete_stock, handle_admin_manage_stock_text,
     admin_export_stock, admin_clear_unsold_stock, admin_clear_all_stock,
@@ -65,98 +75,74 @@ def _env_positive_int(name: str, default: int) -> int:
 LOG_FILE_MAX_BYTES = _env_positive_int("BOT_LOG_MAX_BYTES", 5 * 1024 * 1024)
 LOG_FILE_BACKUP_COUNT = _env_positive_int("BOT_LOG_BACKUP_COUNT", 7)
 
-# Setup logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        RotatingFileHandler(
-            'bot.log',
-            maxBytes=LOG_FILE_MAX_BYTES,
-            backupCount=LOG_FILE_BACKUP_COUNT,
-            encoding='utf-8'
-        )
-    ]
-)
 logger = logging.getLogger(__name__)
+_LOGGING_CONFIGURED = False
 
-# Disable noisy loggers
-logging.getLogger('httpx').setLevel(logging.WARNING)
-logging.getLogger('telegram').setLevel(logging.WARNING)
+
+def setup_logging():
+    global _LOGGING_CONFIGURED
+    if _LOGGING_CONFIGURED:
+        return
+    logging.basicConfig(
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        level=logging.INFO,
+        handlers=[
+            logging.StreamHandler(sys.stdout),
+            RotatingFileHandler(
+                'bot.log',
+                maxBytes=LOG_FILE_MAX_BYTES,
+                backupCount=LOG_FILE_BACKUP_COUNT,
+                encoding='utf-8'
+            )
+        ]
+    )
+    logging.getLogger('httpx').setLevel(logging.WARNING)
+    logging.getLogger('telegram').setLevel(logging.WARNING)
+    _LOGGING_CONFIGURED = True
 
 async def post_init(application):
-    # Wrap Telegram API send methods to capture outgoing messages for admin chat history.
-    original_send_message = application.bot.send_message
-    original_send_document = application.bot.send_document
-    original_send_photo = application.bot.send_photo
+    if application.bot_data.get("_shop_post_init_done"):
+        return
+    application.bot_data["_shop_post_init_done"] = True
 
-    async def send_message_logged(*args, **kwargs):
-        result = await original_send_message(*args, **kwargs)
-        try:
-            if getattr(result.chat, "type", None) == "private":
-                await log_telegram_message(
-                    chat_id=result.chat.id,
-                    message_id=result.message_id,
-                    direction="out",
-                    message_type="text",
-                    text=getattr(result, "text", None),
-                    payload=None,
-                    sent_at=getattr(result, "date", None),
+    default_commands = [
+        BotCommand("start", "Open bot"),
+        BotCommand("shop", "Shop"),
+        BotCommand("sale", "Sale deals"),
+        BotCommand("search", "Search products"),
+        BotCommand("balance", "Check balance"),
+        BotCommand("deposit", "Deposit funds"),
+        BotCommand("history", "Order history"),
+        BotCommand("support", "Get support"),
+        BotCommand("settings", "Settings"),
+        BotCommand("help", "Help"),
+    ]
+    admin_commands = default_commands + [
+        BotCommand("admin", "Admin panel"),
+        BotCommand("status", "Bot status"),
+        BotCommand("emojiid", "Get custom emoji ID"),
+        BotCommand("notification", "Broadcast message"),
+    ]
+
+    try:
+        await application.bot.set_my_commands(default_commands, scope=BotCommandScopeDefault())
+        registered_admin_scopes = 0
+        for admin_id in ADMIN_IDS:
+            try:
+                await application.bot.set_my_commands(
+                    admin_commands,
+                    scope=BotCommandScopeChat(chat_id=admin_id),
                 )
-        except Exception:
-            logger.exception("Failed to log outgoing send_message")
-        return result
-
-    async def send_document_logged(*args, **kwargs):
-        result = await original_send_document(*args, **kwargs)
-        try:
-            if getattr(result.chat, "type", None) == "private":
-                doc = getattr(result, "document", None)
-                payload = None
-                if doc:
-                    payload = {
-                        "file_id": getattr(doc, "file_id", None),
-                        "file_name": getattr(doc, "file_name", None),
-                        "mime_type": getattr(doc, "mime_type", None),
-                    }
-                await log_telegram_message(
-                    chat_id=result.chat.id,
-                    message_id=result.message_id,
-                    direction="out",
-                    message_type="document",
-                    text=getattr(result, "caption", None),
-                    payload=payload,
-                    sent_at=getattr(result, "date", None),
-                )
-        except Exception:
-            logger.exception("Failed to log outgoing send_document")
-        return result
-
-    async def send_photo_logged(*args, **kwargs):
-        result = await original_send_photo(*args, **kwargs)
-        try:
-            if getattr(result.chat, "type", None) == "private":
-                photos = getattr(result, "photo", None) or []
-                payload = None
-                if photos:
-                    payload = {"file_id": getattr(photos[-1], "file_id", None)}
-                await log_telegram_message(
-                    chat_id=result.chat.id,
-                    message_id=result.message_id,
-                    direction="out",
-                    message_type="photo",
-                    text=getattr(result, "caption", None),
-                    payload=payload,
-                    sent_at=getattr(result, "date", None),
-                )
-        except Exception:
-            logger.exception("Failed to log outgoing send_photo")
-        return result
-
-    application.bot.send_message = send_message_logged  # type: ignore[assignment]
-    application.bot.send_document = send_document_logged  # type: ignore[assignment]
-    application.bot.send_photo = send_photo_logged  # type: ignore[assignment]
+                registered_admin_scopes += 1
+            except Exception:
+                logger.exception("Failed to set admin command menu for chat_id=%s", admin_id)
+        logger.info(
+            "✅ Telegram command menu registered (%s default commands, %s admin chat scopes)",
+            len(default_commands),
+            registered_admin_scopes,
+        )
+    except Exception:
+        logger.exception("Failed to set Telegram command menu")
 
 def setup_bot():
     app = (
@@ -212,7 +198,10 @@ def setup_bot():
     
     # Deposit conversation - support both languages
     deposit_conv = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^(➕ Nạp tiền|➕ Deposit)$"), handle_deposit_text)],
+        entry_points=[
+            CommandHandler("deposit", handle_deposit_text),
+            MessageHandler(filters.Regex("^(➕ Nạp tiền|➕ Deposit)$"), handle_deposit_text),
+        ],
         states={
             WAITING_DEPOSIT_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_deposit_amount)],
         },
@@ -260,7 +249,17 @@ def setup_bot():
     
     # Commands
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(CommandHandler("settings", settings_command))
+    app.add_handler(CommandHandler("shop", handle_shop_text))
+    app.add_handler(CommandHandler("sale", sale_command))
+    app.add_handler(CommandHandler("search", search_products_command))
+    app.add_handler(CommandHandler("balance", handle_balance))
+    app.add_handler(CommandHandler("history", handle_history_text))
+    app.add_handler(CommandHandler("support", handle_support_text))
     app.add_handler(CommandHandler("admin", admin_command))
+    app.add_handler(CommandHandler("status", status_command))
+    app.add_handler(CommandHandler("emojiid", emoji_id_command))
     
     # Notification conversation
     notification_conv = ConversationHandler(
@@ -308,16 +307,27 @@ def setup_bot():
     app.add_handler(CallbackQueryHandler(set_language, pattern="^set_lang_(vi|en)$"))
     app.add_handler(CallbackQueryHandler(delete_message, pattern="^delete_msg$"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_main$"))
+    app.add_handler(CallbackQueryHandler(handle_support_callback, pattern="^support$"))
     app.add_handler(CallbackQueryHandler(show_shop, pattern="^shop(?:_\\d+)?$"))
     app.add_handler(CallbackQueryHandler(show_shop_folder, pattern="^shopfolder_\\d+_\\d+_\\d+$"))
+    app.add_handler(CallbackQueryHandler(show_sale_catalog, pattern="^sale(?:_\\d+)?$"))
+    app.add_handler(CallbackQueryHandler(show_sale_product, pattern="^salebuy_\\d+$"))
     app.add_handler(CallbackQueryHandler(show_product, pattern="^buy_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_vnd, pattern="^pay_vnd_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_usdt, pattern="^pay_usdt_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_sale_payment_vnd, pattern="^salepay_vnd_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_sale_payment_usdt, pattern="^salepay_usdt_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_quick_quantity, pattern="^buyqty_(?:vnd|usdt)_\\d+_\\d+$"))
     app.add_handler(CallbackQueryHandler(prompt_manual_quantity, pattern="^buyqtymanual_(?:vnd|usdt)_\\d+$"))
     app.add_handler(CallbackQueryHandler(prompt_quick_quantity, pattern="^buyqtyquick_(?:vnd|usdt)_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_sale_quick_quantity, pattern="^salebuyqty_(?:vnd|usdt)_\\d+_\\d+$"))
+    app.add_handler(CallbackQueryHandler(prompt_sale_manual_quantity, pattern="^salebuyqtymanual_(?:vnd|usdt)_\\d+$"))
+    app.add_handler(CallbackQueryHandler(prompt_sale_quick_quantity, pattern="^salebuyqtyquick_(?:vnd|usdt)_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_direct_payment_vietqr, pattern="^directpay_vietqr_\\d+_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_direct_payment_binance, pattern="^directpay_binance_\\d+_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_sale_direct_payment_vietqr, pattern="^saledirectpay_vietqr_\\d+_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_sale_direct_payment_binance, pattern="^saledirectpay_binance_\\d+_\\d+$"))
+    app.add_handler(CallbackQueryHandler(show_direct_order_status, pattern="^directstatus:.+$"))
     app.add_handler(CallbackQueryHandler(show_account, pattern="^account$"))
     app.add_handler(CallbackQueryHandler(show_history, pattern="^history(?:_page_\\d+)?$"))
     app.add_handler(CallbackQueryHandler(show_order_detail, pattern="^order_detail_\\d+$"))
@@ -360,6 +370,7 @@ def setup_bot():
     return app
 
 async def main():
+    setup_logging()
     # Init database FIRST
     os.makedirs("data", exist_ok=True)
     logger.info("📁 Data directory ready")
@@ -372,6 +383,7 @@ async def main():
     
     logger.info("🤖 Bot is starting...")
     await bot_app.initialize()
+    await post_init(bot_app)
     await bot_app.start()
     await bot_app.updater.start_polling(drop_pending_updates=True)
     
@@ -404,6 +416,7 @@ async def main():
         logger.info("👋 Bot stopped!")
 
 if __name__ == "__main__":
+    setup_logging()
     # Use uvloop on Linux for better performance
     try:
         import uvloop

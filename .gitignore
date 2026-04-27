@@ -29,7 +29,7 @@ dist_pyc/data/*.db
 build/
 dist/
 .codex_pycache/
-dist_pyc/pycache/
+dist_pyc/
 *.tsbuildinfo
 
 # IDE

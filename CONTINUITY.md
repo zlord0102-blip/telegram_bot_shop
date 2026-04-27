@@ -1,3 +1,265 @@
+Current scope add-on (latest request): full repository audit excluding `storefront-web`:
+  - Treat `admin_dashboard_telegram_bot` as the Telegram Bot Admin Dashboard project.
+  - Treat repository-root Python/SQL/support files outside `admin_dashboard_telegram_bot` and outside `storefront-web` as the Telegram Bot project.
+  - Audit both projects for optimization and improvement opportunities.
+  - Check whether Dashboard and Telegram Bot are fully synchronized in schema, APIs, settings, product/order/stock/license flows, and runtime assumptions.
+  - Use `@browser-use` before auditing Dashboard UI/logic and again after Dashboard work is completed.
+  - Produce separate detailed feature-list files for each project.
+Constraints / assumptions for this audit batch:
+  - Ignore `storefront-web` except where needed to avoid confusing shared/root files.
+  - Act only inside this repository.
+  - Preserve unrelated dirty worktree changes.
+Done:
+  - Latest user request captured in the continuity ledger.
+  - Context compaction/resume detected; ledger was re-read in full and remains the canonical state for the current audit.
+  - Initial repo inventory confirms `admin_dashboard_telegram_bot` is present as a separate Next.js dashboard project and root files contain Telegram Bot/database/schema/runtime code; `storefront-web` is present and should be ignored for this audit.
+  - `git status --short` shows a dirty worktree with existing changes in `supabase_schema_license_management.sql`; preserve as unrelated/user-owned unless audit findings require referencing it.
+  - `browser-use` skill guidance was loaded; the required Node REPL browser-control tool is not exposed in this session's callable tool list, so true `@browser-use` automation is currently blocked unless that tool becomes available.
+  - Initial dashboard dev server start inside sandbox failed with Next `spawn EPERM`; reran with approved escalation and `http://127.0.0.1:3001/login` returns HTTP 200.
+  - Pre-audit Dashboard fallback check compiled and fetched Bot dashboard routes `/`, `/products`, `/stock`, `/orders`, `/direct-orders`, `/users`, `/reports`, `/settings`, `/licenses` successfully with HTTP 200 from the local Next dev server.
+  - Dev log warning found during pre-audit fallback check: `Failed to find font override values for font Newsreader`.
+  - Dashboard audit findings identified:
+    - Bot Dashboard routes/features are present for dashboard, products/folders, stock/custom-check, orders, direct orders, deposits, withdrawals, USDT, users/broadcast, reports, licenses, and settings.
+    - `Orders` page still loads only `users.user_id, username`, so it does not fully match the dashboard latest-orders table that includes display name.
+    - `app/layout.tsx` imports `Newsreader`; local dev logs warn that Next cannot find font override values for that font.
+    - Stock custom-check routes send stock/mail credentials to hardcoded external services; provider URLs and data-exposure policy should be configurable/documented before production-heavy use.
+    - License Dashboard/API exists, but license SQL is split into dedicated files and is not included in `supabase_schema_all_in_one.sql`.
+  - Telegram Bot audit findings identified:
+    - Bot runtime supports Supabase/SQLite switch, Telegram handlers, shop folders, dynamic pricing/promos, direct VietQR/Binance payments, balance/USDT purchases, deposits/withdrawals, history, admin stock/order flows, SePay polling, Binance deposit matching, and delivery outbox retry/reconcile.
+    - `database/supabase_client.py` still falls back to publishable/anon keys for Bot Supabase runtime; this can silently break privileged Bot operations under RLS.
+    - `keyboards/inline.py` has an empty-label cancel button in `pending_deposits_keyboard`.
+  - Cross-project sync findings identified:
+    - Dashboard and Bot share the same core tables/settings for products, stock, users, orders, direct orders, finance, folders, pricing/promos, and UI flags.
+    - Individual SQL migrations can redefine `get_products_with_stock()`/`get_product_with_stock(bigint)` with different return shapes; applying `supabase_schema_product_soft_delete.sql` after folder SQL can remove `bot_folder_id` from the RPC contract. The current all-in-one order ends with the folder-aware RPC.
+  - Created audit/feature documentation:
+    - `PROJECT_AUDIT_REPORT.md`
+    - `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md`
+    - `TELEGRAM_BOT_FEATURES.md`
+  - Verification completed:
+    - Dashboard TypeScript check passed with `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc.cmd --noEmit -p .\\tsconfig.json`.
+    - Python no-write AST parse passed for 27 Bot/runtime files.
+    - Post-work Dashboard fallback route check returned HTTP 200 for `/login`, `/`, `/products`, `/stock`, `/orders`, `/direct-orders`, `/deposits`, `/withdrawals`, `/usdt`, `/users`, `/reports`, `/settings`, and `/licenses`.
+    - Post-work Next stderr still contains the `Newsreader` font warning.
+  - Attempted to identify/stop the local Dashboard dev server on port 3001 after verification:
+    - sandboxed `Get-NetTCPConnection -LocalPort 3001` returned Access denied.
+    - escalation request to inspect the port owner was rejected by the system due quota/usage limit, so no workaround was attempted.
+Now:
+  - Summarize deliverables, verification, browser-use limitation, and the dev-server cleanup limitation.
+Next:
+  - User/operator may stop the local Dashboard dev server manually if it remains running on port 3001.
+Open Questions:
+  - True `@browser-use` UI automation remains blocked by missing callable browser tool; fallback route/log checks are being used and marked as fallback.
+
+Current scope add-on (latest request): rewrite the generated audit/report files in Vietnamese and add clear suggested next steps.
+Constraints / assumptions for this rewrite:
+  - Keep the same three deliverable files:
+    - `PROJECT_AUDIT_REPORT.md`
+    - `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md`
+    - `TELEGRAM_BOT_FEATURES.md`
+  - Preserve audit meaning and technical findings, but make wording Vietnamese-first and easier to act on.
+  - Add prioritized next-step guidance for what should be fixed/deployed/tested next.
+Done:
+  - Latest request captured in the continuity ledger.
+  - Rewrote `PROJECT_AUDIT_REPORT.md` in Vietnamese with Vietnamese sync verdict, findings, and prioritized next-step sections.
+  - Rewrote `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md` in Vietnamese with Dashboard feature inventory and Dashboard-specific next steps.
+  - Rewrote `TELEGRAM_BOT_FEATURES.md` in Vietnamese with Bot feature inventory and Bot-specific next steps.
+  - Reviewed the beginning/end of the updated files and confirmed they exist in the worktree.
+Now:
+  - Summarize the rewritten reports and next-step recommendations to the user.
+Next:
+  - User can choose which prioritized next-step batch to implement first.
+Open Questions:
+  - None.
+
+Current scope add-on (latest request): start implementing the recommended next steps one by one.
+Constraints / assumptions for this implementation batch:
+  - Follow the priority order from `PROJECT_AUDIT_REPORT.md`.
+  - Start with Priority 1: schema/deploy tightening before UI/security hardening.
+  - Prior explicit SQL constraint still applies: new SQL support should be added in new SQL files, not appended to older SQL files.
+  - Preserve unrelated dirty worktree changes, including existing changes in `supabase_schema_license_management.sql`.
+Done:
+  - Latest request captured in the continuity ledger.
+  - Added new canonical SQL file `supabase_schema_bot_product_rpc_canonical.sql`.
+    - Rebuilds `public.get_products_with_stock()` and `public.get_product_with_stock(bigint)`.
+    - Includes hidden/soft-delete filtering, `sort_position`, `bot_folder_id`, Bot pricing/promo fields, website compatibility fields, and stock count.
+    - Intended to be applied last after product/folder split migrations.
+  - Added Vietnamese deploy checklist `BOT_DASHBOARD_DEPLOYMENT_CHECKLIST.md` with SQL apply order, required env, smoke tests, and quick rollback notes.
+  - Static verification for Step 1:
+    - `git diff --check` completed with only existing LF/CRLF warnings for `CONTINUITY.md` and `supabase_schema_license_management.sql`.
+    - Text check confirmed canonical SQL contains the expected product RPC rebuilds and `sort_position`/`bot_folder_id` return fields.
+  - Implemented Priority 2 small operational fixes:
+    - Dashboard Orders page now fetches/displays `users.display_name` and aligns columns with the home latest-orders table.
+    - Removed `Newsreader` from Dashboard layout and changed body font to `--font-sans` to address the Next font warning.
+    - Telegram admin pending deposit cancel button now has visible label `❌ Hủy`.
+    - Bot Supabase runtime now requires `SUPABASE_SECRET_KEY` or `SUPABASE_SERVICE_ROLE_KEY`; publishable/anon fallback was removed from `database/supabase_client.py`.
+  - Verification for Priority 2 fixes:
+    - Dashboard TypeScript check passed.
+    - Python AST parse passed for `database/supabase_client.py` and `keyboards/inline.py`.
+    - Text check found no remaining `Newsreader`/`font-serif` references.
+    - `git diff --check` completed with only LF/CRLF warnings.
+Now:
+  - Summarize completed Step 1 and Step 2, then propose the next larger hardening batch.
+Next:
+  - Next recommended batch is Priority 3 hardening: secret settings masking/server API, high-risk mutation API routes, custom-check provider configurability, and audit logs.
+Open Questions:
+  - None.
+
+Current scope add-on (latest request): continue implementation and mirror newly added SQL into `supabase_schema_all_in_one.sql`.
+Constraints / assumptions for this continuation:
+  - New SQL may still be kept as separate focused files for review, but every new SQL addition must also be added to `supabase_schema_all_in_one.sql`.
+  - User wants to apply one all-in-one SQL file instead of applying split SQL files one by one.
+  - This supersedes the earlier SQL-only-in-new-file preference where it conflicts; current approach is "new file plus all-in-one mirror".
+  - Preserve unrelated dirty changes, including existing dirty `supabase_schema_license_management.sql`.
+Done:
+  - Latest request captured in the continuity ledger.
+  - Mirrored `supabase_schema_bot_product_rpc_canonical.sql` into `supabase_schema_all_in_one.sql` near the end so a single all-in-one apply re-establishes the final Bot product RPC contract.
+  - Updated standalone canonical SQL to include `bot_product_folders` RLS/policy setup for consistency.
+  - Updated `BOT_DASHBOARD_DEPLOYMENT_CHECKLIST.md` so the preferred deploy path is now applying `supabase_schema_all_in_one.sql` once; split SQL files are documented as review/rollback/selective apply helpers.
+  - Implemented first Priority 3 hardening items:
+    - Added server-side `/api/admin/settings` route for Bot settings.
+    - Settings page now loads/saves settings through the admin API instead of directly reading/writing the `settings` table from the browser.
+    - Secret settings (`sepay_token`, `binance_api_key`, `binance_api_secret`, `payment_notify_bot_token`) are no longer returned to the browser; API reports whether a secret exists and only updates it when admin enters a new value.
+    - Stock custom-check provider URLs/client ID are now configurable via env with backward-compatible defaults.
+    - Updated `admin_dashboard_telegram_bot/.env.example` and `BOT_DASHBOARD_DEPLOYMENT_CHECKLIST.md` with custom-check provider envs and data-exposure note.
+  - Verification for this continuation batch:
+    - Dashboard TypeScript check passed.
+    - Text check confirms `supabase_schema_all_in_one.sql` contains the canonical Bot product RPC section with `sort_position` and `bot_folder_id`.
+    - Text check confirms custom-check env variables exist in code and `.env.example`.
+    - `git diff --check` completed with only LF/CRLF warnings.
+Now:
+  - Summarize completed continuation batch and next hardening steps.
+Next:
+  - Continue remaining Priority 3 hardening: move high-risk product/stock/direct-order mutations to server API routes and add admin audit logging.
+Open Questions:
+  - None.
+
+Current scope add-on (latest request): force Supabase env usage to new Publishable Key + Secret Key only.
+Constraints / assumptions:
+  - Do not print actual `.env` values or inspect secret contents.
+  - Legacy `SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY` were exposed and must no longer be accepted as fallbacks.
+  - Browser clients must require `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+  - Server/Bot clients must require `SUPABASE_SECRET_KEY`.
+  - Apply to Admin Dashboard and Bot runtime; also check shared/storefront helpers if they still fallback to legacy keys, because shared deployment can otherwise pick the wrong env.
+Done:
+  - Latest request captured in the continuity ledger.
+  - Removed runtime fallback usage of legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY`.
+  - Admin Dashboard browser client now requires `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+  - Admin Dashboard server/admin clients now require `SUPABASE_SECRET_KEY`.
+  - Telegram Bot Supabase runtime and SQLite-to-Supabase migration script now require `SUPABASE_SECRET_KEY`.
+  - Storefront Supabase browser/admin helpers were also tightened so shared deployment cannot silently pick legacy keys.
+  - `dist_pyc/.env.example` was updated so the Bot template no longer suggests `SUPABASE_ANON_KEY` or `SUPABASE_SERVICE_ROLE_KEY`.
+  - Updated relevant docs/checklists to name publishable/secret key envs and warn against reusing exposed legacy keys.
+  - Verification completed:
+    - legacy env-name search excluding `.env*`, build outputs, dependencies, and `CONTINUITY.md` found only documentation warning mentions, not runtime fallback code.
+    - `.env.example`/`.env.local.example` templates were checked separately and no longer contain legacy Supabase key names.
+    - `git diff --check` reported only existing LF/CRLF warnings.
+    - Admin Dashboard TypeScript check passed.
+    - Storefront TypeScript check passed.
+    - Python AST parse passed for `database/supabase_client.py` and `scripts/migrate_sqlite_to_supabase.py`.
+    - `rg` is still blocked by WindowsApps access denied in this Codex runtime, so PowerShell `Select-String` was used for fallback search.
+Now:
+  - Summarize completed env-key remediation and required `.env` variables to the user.
+Next:
+  - Operator should update deployment/runtime envs to the new key names and redeploy/restart affected services.
+Open Questions:
+  - None.
+
+Current scope add-on (latest request): fix Dashboard runtime error `Error: supabaseKey is required` after switching to publishable/secret envs.
+Constraints / assumptions:
+  - Do not print or inspect secret values.
+  - Check only env variable names / presence where needed.
+  - Screenshot points at `admin_dashboard_telegram_bot/lib/supabaseClient.ts`, where the browser Supabase client receives an empty publishable key.
+Done:
+  - Latest request captured in the continuity ledger.
+  - Diagnosed root cause: `admin_dashboard_telegram_bot/.env.local` still had only legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY` and `SUPABASE_SERVICE_ROLE_KEY`, while the Dashboard browser client now correctly reads `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`.
+  - Root `.env` already had the new key names, but the Dashboard runs from its own subdirectory and reads `admin_dashboard_telegram_bot/.env.local`.
+  - Updated Dashboard `.env.local` without printing secret values:
+    - removed legacy Supabase key names
+    - added/updated `NEXT_PUBLIC_SUPABASE_URL`
+    - added/updated `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
+    - added/updated `SUPABASE_SECRET_KEY`
+  - Verified with Next env loader in `admin_dashboard_telegram_bot` that the new env names are present and legacy names are missing.
+  - Added clearer browser-env guard messages in Dashboard and Storefront Supabase browser clients.
+  - Verification completed:
+    - Admin Dashboard TypeScript check passed.
+    - Storefront TypeScript check passed.
+    - `git diff --check` reported only existing LF/CRLF warnings.
+Now:
+  - Tell the user to restart/rebuild the Dashboard dev/prod server so Next reloads the corrected env.
+Next:
+  - If the deployed site still shows the same error after restart/redeploy, check the deployment provider env scope for `admin_dashboard_telegram_bot` and ensure `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` is set there.
+Open Questions:
+  - Whether the deployed production environment has the same corrected env names is **UNCONFIRMED**.
+
+Current scope add-on (latest request): review `TELEGRAM_BOT_FEATURES.md` and judge whether current Telegram Bot features/flows are reasonable, then suggest more convenient feature/flow improvements based on best practices.
+Constraints / assumptions:
+  - This turn is advisory/product review only unless the user explicitly asks to implement.
+  - Use `TELEGRAM_BOT_FEATURES.md` as the local feature inventory source.
+  - Use current official Telegram/Bot API documentation where relevant for best-practice grounding.
+Done:
+  - Latest request captured in the continuity ledger.
+  - Read `TELEGRAM_BOT_FEATURES.md`.
+  - Cross-checked key Telegram best-practice areas against official docs:
+    - command/menu setup (`/start`, `/help`, `/settings`, command scopes)
+    - reply/inline keyboard usage and callback acknowledgement
+    - ForceReply for guided text input
+    - deep links for contextual entry/resume flows
+    - Bot Payments/Stars and pre-checkout availability confirmation
+    - Mini Apps for richer catalog/checkout UX
+    - protected content for sensitive delivered stock messages/files
+  - Advisory conclusion:
+    - current Bot feature set and main purchase/payment/delivery flows are broadly reasonable and mature for a Telegram-native digital shop.
+    - highest-value improvements are command menu/help, order status/resume buttons, one-tap "top up missing amount", contextual support per order, product search/rebuy, ForceReply for manual inputs, health/admin audit commands, and optional Mini App/catalog path if product count grows.
+Now:
+  - Return a prioritized Vietnamese recommendation list with supporting best-practice sources.
+Next:
+  - If user chooses an item, implement the selected improvement batch.
+Open Questions:
+  - None.
+
+Current scope add-on (latest request): start implementing the Telegram Bot UX improvements immediately and redesign/clean project structure by removing unnecessary clutter.
+Constraints / assumptions:
+  - Preserve user-owned work and do not delete runtime source or data unless clearly generated/obsolete.
+  - Treat cleanup in two tiers:
+    - safe deletion of generated cache/build artifacts and obsolete env examples already replaced
+    - structural reorganization only when import paths/docs can be updated and verified
+  - First implementation batch should prioritize the previously recommended quick wins:
+    - `/help` and command menu setup
+    - clearer pending direct-order/deposit status/resume actions
+    - one-tap top-up for missing balance where feasible
+  - No real secret values should be printed.
+Done:
+  - Latest request captured in the continuity ledger.
+  - Inventory completed:
+    - confirmed clutter/artifacts at root: `build/`, `dist/`, `dist_pyc/`, `__pycache__/`, `.codex_pycache/`, `bot.log`, Python package `__pycache__/`, `*.tsbuildinfo`, Dashboard dev logs.
+    - `venv/` and app source directories were kept.
+  - Implemented Telegram Bot UX quick wins:
+    - added `/help` command with a compact user guide.
+    - added `/settings` command for language switching and user ID display.
+    - configured Telegram command menu in `post_init` using `set_my_commands`, wrapped in a safe try/except so startup does not fail if Telegram rejects the call temporarily.
+    - added command shortcuts `/shop`, `/balance`, `/history`, `/support`; `/deposit` is now an entrypoint inside the existing deposit conversation so manual amount input still works.
+    - added callback support panel (`support`) for inline order-status screens.
+    - added one-tap `Nạp phần thiếu` / `Top up missing` buttons when VND balance is insufficient.
+    - added direct-order status actions after VietQR/Binance direct order creation: `Kiểm tra trạng thái`, `Lịch sử`, `Hỗ trợ`, `Xóa`.
+    - added `show_direct_order_status` callback that checks the current user's direct order by payment code and shows pending/confirmed/cancelled guidance.
+    - added `get_user_direct_order_by_code(...)` in both SQLite and Supabase backends.
+  - Cleanup/restructure completed:
+    - added `PROJECT_STRUCTURE.md` describing the recommended clean repo structure and cleanup rules.
+    - updated `.gitignore` to ignore `dist_pyc/` entirely and keep build/cache/log artifacts out.
+    - removed generated artifact directories/files: `build/`, `dist/`, `dist_pyc/`, root/package `__pycache__/`, `.codex_pycache/`, `bot.log`, and TS build-info files.
+    - `admin_dashboard_telegram_bot/next-dev.err.log` and `next-dev.out.log` could not be removed because they are locked by a running Dashboard dev-server process.
+    - refactored `run.py` so logging setup happens only when running the Bot, not on import; import checks no longer recreate `bot.log`.
+  - Verification completed:
+    - AST parse passed for `run.py`, `handlers/start.py`, `handlers/shop.py`, `database/db.py`, `database/supabase_db.py`, and `keyboards/inline.py` using `utf-8-sig` because `keyboards/inline.py` has a pre-existing UTF-8 BOM.
+    - Import check passed with project `venv`: `import run` succeeds and does not recreate `bot.log`.
+    - `git diff --check` reported only existing LF/CRLF warnings.
+Now:
+  - Summarize implemented UX improvements, cleanup, locked files, and verification to the user.
+Next:
+  - If user wants deeper restructuring, move docs/reports and SQL into `docs/`/`sql/` in a separate migration-safe batch with docs/checklist path updates.
+Open Questions:
+  - Whether to stop the running Dashboard dev server so its two log files can be deleted is **UNCONFIRMED**.
+
 Current scope add-on (latest request): implement security remediation from the audit findings:
   - remove the obfuscated Telegram admin backdoor in `config.py`
   - clean tracked env/example files and generated sensitive artifacts so repo no longer leaks live secrets or stock/account data
@@ -2806,8 +3068,570 @@ Notes:
   - Patched `admin_dashboard_telegram_bot/app/api/stock/custom-check/route.ts` to reuse `requireAdminSession(...)` instead of duplicating the older RLS-based admin check.
   - Verification:
     - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc.cmd --noEmit -p .\\tsconfig.json` passed.
+    - SQL text check confirms `supabase_schema_license_management.sql` no longer recreates `idx_license_activations_active_key` on only `(license_key_id)` and now gates `fingerprint_mismatch` behind `v_device_limit_mode <> 'unlimited_devices'`.
 - Next:
   - Deploy/restart Admin Dashboard with `SUPABASE_SECRET_KEY` set.
   - If the same user still sees access denied after deploy, add or update the admin row:
     - `public.admin_users.user_id = 7a3d3c09-3372-4d51-a7d6-48ac2897d997`
     - role should be `admin` or `superadmin`.
+
+- Current scope add-on (latest request): re-check LicenseKey `Không giới hạn thiết bị` logic:
+  - User reports a key displayed in Dashboard as `Không giới hạn` with `1 bind đang hoạt động` still locks the extension with message `Extension locked` / `Key đang được dùng trên thiết bị khác`.
+  - Screenshot shows key for `AUTO_HIT_SUNO`, active, device mode `Không giới hạn`, active fingerprint `suno_auto_hit:hipfehkjpedlheipoppkmmaialaimdno`.
+  - Expected behavior: an unlimited-device key should not return `fingerprint_mismatch` for another fingerprint; it should create/update a separate active activation for each fingerprint.
+- Now:
+  - Current task is to inspect all remaining single-device enforcement points in API/SQL/UI/extension message flow and patch any repo-side gap.
+- Open Questions:
+  - Whether the live Supabase database function `public.activate_license_key(...)` is the new multi-device version or the old single-device version is **UNCONFIRMED**.
+  - Whether the extension currently sends a different fingerprint than the one shown in Dashboard is **UNCONFIRMED**.
+- Diagnosis:
+  - Repo-side `supabase_schema_license_multi_device_keys.sql` has the intended logic: `fingerprint_mismatch` is only returned when `v_device_limit_mode <> 'unlimited_devices'`.
+  - Dashboard create/edit/list logic passes and displays `deviceLimitMode` correctly, so the screenshot strongly suggests production runtime still has at least one stale DB piece:
+    - old `public.activate_license_key(...)` function still enforcing one active bind per key, or
+    - old unique index `idx_license_activations_active_key` still blocking multiple active activations per key.
+  - Local live DB query could not confirm production state because local `.env.local` still contains a disabled legacy Supabase key; smoke test returns `Legacy API keys are disabled`.
+- Done:
+  - Patched `admin_dashboard_telegram_bot/app/api/_shared/license.ts` with a server-side fallback:
+    - if RPC returns `fingerprint_mismatch`, API rechecks the key by hash
+    - if the key is actually `unlimited_devices`, API creates/updates an activation for the current fingerprint directly
+    - if the old single-device unique index is still blocking inserts, API throws a clear migration/service error instead of returning `fingerprint_mismatch`
+    - this prevents the extension from showing `Key đang được dùng trên thiết bị khác` for a truly unlimited key when only the RPC function is stale
+  - Patched `supabase_schema_license_management.sql` so rerunning the base license schema no longer downgrades multi-device behavior:
+    - base table definition now includes `license_keys.device_limit_mode`
+    - base schema drops old single-active-key index and creates unique active `(license_key_id, fingerprint)` index
+    - base `public.activate_license_key(...)` now uses unlimited-aware activation logic
+  - Verification:
+    - `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc.cmd --noEmit -p .\\tsconfig.json` passed.
+- Next:
+  - Deploy/restart Admin Dashboard so the fallback is active.
+  - Still apply `supabase_schema_license_multi_device_keys.sql` on production to replace the stale RPC and drop old `idx_license_activations_active_key`; fallback cannot support multiple active binds if the old unique index remains.
+
+- Current scope add-on (latest request): remove SQLite completely and continue the next implementation batch:
+  - User wants the project to use Supabase only.
+  - Remove SQLite runtime fallback, SQLite dependencies/artifacts, and outdated docs/config references where practical.
+  - Continue the next Telegram Bot UX/admin batch after SQLite cleanup.
+- Constraints / assumptions:
+  - Do not print real `.env` secret values.
+  - Preserve unrelated dirty worktree changes.
+  - Delete only files that are clearly SQLite/generated artifacts or obsolete SQLite backend code.
+  - New SQL, if added, must also be mirrored into `supabase_schema_all_in_one.sql`.
+- Done:
+  - Latest request captured in the continuity ledger.
+  - SQLite reference search completed:
+    - `database/__init__.py` still switches between Supabase and `.db` via `USE_SUPABASE`.
+    - `database/db.py` is the large SQLite backend and imports `aiosqlite`.
+    - `sepay_checker.py` still contains SQLite fallback paths, `USE_SUPABASE`, and `DB_PATH = "data/shop.db"`.
+    - `requirements.txt` still includes `aiosqlite`.
+    - `.env.example`, setup/deploy docs, feature docs, and project structure docs still describe SQLite/Supabase switching.
+    - `data/` currently shows no visible files from the first listing.
+  - Runtime SQLite cleanup started:
+    - `database/__init__.py` now imports Supabase backend directly.
+    - `sepay_checker.py` now imports Supabase database helpers directly and removed `aiosqlite`/`DB_PATH`/SQLite checker branches.
+    - Deleted obsolete SQLite backend `database/db.py`.
+    - Deleted obsolete migration helper `scripts/migrate_sqlite_to_supabase.py`.
+    - Removed `aiosqlite` from `requirements.txt`.
+    - Removed `USE_SUPABASE` from root `.env.example`.
+  - Documentation/config cleanup completed for current docs:
+    - `BOT_DASHBOARD_DEPLOYMENT_CHECKLIST.md`, `PROJECT_AUDIT_REPORT.md`, `PROJECT_STRUCTURE.md`, `README.md`, `SETUP_GUIDE.md`, and `TELEGRAM_BOT_FEATURES.md` now describe Supabase-only runtime instead of SQLite fallback.
+  - Repository search found no remaining runtime/config SQLite references outside historical `CONTINUITY.md` and explicit notes saying SQLite fallback has been removed.
+  - No local `.db` files were found under the repository outside ignored dependency/build paths.
+  - Next UX/admin batch implemented in code:
+    - `get_order_detail(...)` now returns `user_id` and `product_id` for ownership check and rebuy actions.
+    - Order detail UI now blocks non-owner access and adds `Mua lại`, `Lịch sử`, and `Hỗ trợ` actions.
+    - Manual quantity prompt now sends a Telegram `ForceReply` prompt.
+    - Added admin `/status` command with Supabase env presence, pending queue counts, and checker health summary.
+  - Verification after cleanup/UX batch:
+    - Python no-write AST parse passed for `database/__init__.py`, `database/supabase_db.py`, `handlers/shop.py`, `handlers/admin.py`, `run.py`, and `sepay_checker.py`.
+    - `venv\Scripts\python.exe -c "import run"` passed.
+    - `git diff --check` passed with only existing LF/CRLF normalization warnings.
+  - Feature documentation updated:
+    - `TELEGRAM_BOT_FEATURES.md` now records Supabase-only runtime, `ForceReply` manual quantity input, order-detail `Mua lại`, and admin `/status`.
+  - Final status review:
+    - Runtime/config search found no remaining SQLite/`aiosqlite`/`USE_SUPABASE`/`DB_PATH`/`shop.db` references in active code/config; remaining matches are historical ledger entries or explicit notes saying SQLite fallback has been removed.
+    - `git status --short` remains dirty because of this batch plus prior ongoing work and earlier deleted `dist_pyc` tracked artifacts; no unrelated user changes were reverted.
+- Now:
+  - Summarize completed Supabase-only cleanup, next bot batch, and verification to the user.
+- Next:
+  - Restart/deploy Bot with `SUPABASE_URL` and `SUPABASE_SECRET_KEY`.
+  - Smoke test `/status`, history order detail `Mua lại`, manual quantity input, VietQR/Binance direct payment, and normal balance purchase against the real Supabase database.
+  - Continue later hardening with admin audit log and expanded delivery-outbox metrics in `/status`.
+- Next:
+  - Patch runtime imports to Supabase-only, remove SQLite dependency/backend files, implement next bot UX/admin improvements, then run static verification.
+- Open Questions:
+  - Whether any local `.db` files contain data not yet migrated to Supabase is **UNCONFIRMED**; user explicitly requested removing SQLite, so they will be treated as obsolete unless evidence says otherwise.
+
+- Current scope add-on (latest request): provide the correct Windows/PowerShell command to start the Telegram Bot.
+- Constraints / assumptions:
+  - User is in PowerShell on Windows; `source venv/bin/activate` is a Linux/macOS shell command and will not work there.
+  - Bot runtime is Supabase-only, so `.env` must include `SUPABASE_URL` and `SUPABASE_SECRET_KEY`.
+- Done:
+  - Latest request captured in the continuity ledger.
+- Now:
+  - Reply with PowerShell start commands and the direct venv Python fallback.
+- Next:
+  - If activation is blocked by PowerShell execution policy, use the per-process bypass or run `.\venv\Scripts\python.exe run.py` directly.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): implement all proposed Admin Dashboard and Telegram Bot improvements in one batch, then report only after the batch is complete.
+- User requirements:
+  - Do not stop at planning; implement the proposed Admin Dashboard and Telegram Bot improvements together.
+  - Notify the user after all feasible work in the batch is complete.
+- Constraints / assumptions:
+  - Preserve unrelated dirty worktree changes.
+  - Do not expose secrets from `.env` files.
+  - New SQL additions must also be mirrored into `supabase_schema_all_in_one.sql`.
+  - The request is broad; implement the concrete backlog/proposals already identified in the ledger/docs: Dashboard UX shell/design-system cleanup, stale docs refresh, high-risk Dashboard mutation API hardening, admin audit logging, schema/system health, expanded Bot admin status/health, and practical Bot UX/product search improvements.
+  - Browser automation remains **UNCONFIRMED/blocked** unless a callable browser tool appears; use static/fallback route checks if needed.
+- Done:
+  - Re-read `CONTINUITY.md` in full.
+  - Latest implementation request captured in the continuity ledger.
+- Now:
+  - Create a short execution plan and inspect current Dashboard/Bot mutation/status/search surfaces before editing.
+- Next:
+  - Patch SQL/API/UI/Bot/doc files, run TypeScript/Python/static checks, update ledger with results, then provide one completion summary.
+- Open Questions:
+  - Exact meaning of "all proposals" is broad; proceed with all concrete backlog items from the latest Dashboard/Bot review and mark any non-feasible item explicitly if blocked.
+
+- Current scope add-on (latest request): redesign Telegram Bot UI messages/buttons and support customizable per-product Telegram icons.
+- User requirements:
+  - Improve best-practice wording/layout for Telegram UI messages.
+  - Button labels should use the maximum practical visible text length without breaking Telegram UI.
+  - Product/catalog buttons should show a configurable icon before each product, like the provided screenshots.
+- Constraints / assumptions:
+  - Preserve existing behavior and dirty worktree changes.
+  - Implement customization in code/data model rather than hardcoding one icon globally where practical.
+  - New SQL must be mirrored into `supabase_schema_all_in_one.sql`.
+  - Avoid printing real `.env` secrets.
+- Done:
+  - Latest request captured in the continuity ledger.
+- Now:
+  - Inspect current product/catalog/history UI builders, product database fields/RPCs, and Dashboard product editor.
+- Next:
+  - Add a shared Telegram UI formatting helper, product `telegram_icon` support, Dashboard editing for the icon, and verification.
+- Open Questions:
+  - Whether every existing product should get a specific icon immediately is **UNCONFIRMED**; implementation will provide per-product configuration with a sensible default icon.
+
+- Current scope add-on (latest request): fix crash after explicit `post_init(...)` call.
+- Constraints / assumptions:
+  - Crash: `AttributeError: Attribute send_message of class ExtBot can't be set!`
+  - `python-telegram-bot` 22.x makes `ExtBot` immutable, so monkey-patching `application.bot.send_message/send_document/send_photo` is invalid.
+  - This outgoing-message monkey patch had not been active before because `post_init` was not being called in the manual lifecycle.
+- Done:
+  - Latest crash captured in the continuity ledger.
+  - Patched `run.py` to remove the invalid bot-method monkey patch and the now-unused `log_telegram_message/get_setting` imports.
+  - Kept `post_init(...)` for command-menu registration only.
+  - Verification after removing monkey patch:
+    - AST parse passed for `run.py`.
+    - `import run` passed.
+    - `git diff --check -- run.py` passed.
+- Now:
+  - Tell user to restart Bot and check for command registration log plus no `ExtBot` crash.
+- Next:
+  - Restart Bot; expected log should include `Telegram command menu registered...` and no `ExtBot can't be set` crash.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): Bot starts successfully but Telegram command menu appears not registered.
+- Constraints / assumptions:
+  - `post_init(...)` currently calls `set_my_commands(...)`, but success is not logged.
+  - Telegram may cache command menus briefly; however code should log success/failure clearly and use conservative command descriptions.
+  - Avoid printing any bot token or secrets.
+- Done:
+  - Latest command-registration issue captured in the continuity ledger.
+  - Patched `run.py` command registration:
+    - uses conservative ASCII command descriptions for default Telegram command menu.
+    - registers default commands with `BotCommandScopeDefault()`.
+    - registers admin-only commands (`/admin`, `/status`, `/notification`) for each `ADMIN_IDS` chat via `BotCommandScopeChat`.
+    - logs a success line with registered command count and admin scope count, and logs per-admin failures explicitly.
+  - Verification:
+    - AST parse passed for `run.py`.
+    - Import check passed for `BotCommand`, `BotCommandScopeDefault`, `BotCommandScopeChat`, and `run`.
+    - `git diff --check -- run.py` passed.
+  - Follow-up diagnosis from user log:
+    - no command registration success/failure log appeared after restart.
+    - root cause found: `main()` uses manual PTB lifecycle (`initialize()`, `start()`, `updater.start_polling()`), where builder `.post_init(post_init)` is not automatically invoked like `run_polling()` would do.
+  - Patched `run.py` again:
+    - added idempotent guard in `post_init(...)`.
+    - calls `await post_init(bot_app)` immediately after `await bot_app.initialize()` and before `await bot_app.start()`.
+  - Verification after explicit `post_init` call:
+    - AST parse passed for `run.py`.
+    - `import run` passed.
+    - `git diff --check -- run.py` passed.
+- Now:
+  - Tell user to restart Bot and check for the command registration log.
+- Next:
+  - Restart Bot and check logs for a command-menu success line; if Telegram client still does not show commands, test `/help` and clear/reopen the Telegram chat.
+- Open Questions:
+  - Whether Telegram API is rejecting `set_my_commands` is **UNCONFIRMED** until logs show success/failure.
+
+- Current scope add-on (latest request): review Bot startup log after dependencies/env were fixed.
+- Constraints / assumptions:
+  - User provided log shows Bot reached startup successfully and SePay checker is running.
+  - The visible `PTBUserWarning` entries are library warnings from `python-telegram-bot` `ConversationHandler` setup, not fatal runtime errors.
+- Done:
+  - Latest log review request captured in the continuity ledger.
+- Now:
+  - Explain that the Bot is running, identify the warning source, and suggest whether to ignore or clean up later.
+- Next:
+  - Smoke test Telegram commands `/start`, `/status`, product purchase, and SePay/Binance flow while watching for real `ERROR`/traceback lines.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): fix `ModuleNotFoundError: No module named 'telegram'` when starting Bot with `.\venv\Scripts\python.exe run.py`.
+- Constraints / assumptions:
+  - The import `from telegram import BotCommand` is provided by the PyPI package `python-telegram-bot`, not a package named `telegram`.
+  - The active venv is missing dependencies from `requirements.txt` or was recreated after dependencies were installed elsewhere.
+- Done:
+  - Latest error captured in the continuity ledger.
+- Now:
+  - Tell user to install requirements into the exact venv Python they use to run the Bot.
+- Next:
+  - After dependency install, rerun `.\venv\Scripts\python.exe run.py`; if the next error is Supabase/env-related, check `.env` names.
+- Open Questions:
+  - None.
+
+- Current scope add-on (active latest request): redesign Telegram Bot UI messages/buttons and add configurable product icons for Telegram catalog buttons.
+- User requirements:
+  - Improve Telegram-facing message copy/layout using practical bot UI best practices.
+  - Product/list buttons should use the maximum practical visible label length instead of the old short clipping.
+  - Each product should support a configurable Telegram icon shown before the product name, managed from the Dashboard.
+- Constraints / assumptions:
+  - Preserve existing behavior and unrelated dirty worktree changes.
+  - New SQL must also be mirrored into `supabase_schema_all_in_one.sql`.
+  - Code should remain backward compatible if the live DB has not applied the new `telegram_icon` column yet.
+  - Existing products do not have confirmed per-product icons; use `📦` as fallback until edited in Dashboard.
+- Done:
+  - Re-read current Bot catalog/history/product UI code.
+  - Confirmed product lists currently clip button names to 40 chars and do not support per-product icons.
+  - Confirmed product data comes from Supabase RPCs with fallback direct selects, so `telegram_icon` must be added to both SQL RPC return shapes and fallback select paths.
+  - Confirmed Dashboard Products page directly edits `products`, so it needs a new add/edit field and table column for the Telegram icon.
+- Now:
+  - Add shared Telegram UI formatting helper, wire it into Bot catalog/history/product detail, add `telegram_icon` DB field support, and update Dashboard Products UI.
+- Next:
+  - Run Python AST/import checks, Dashboard TypeScript check, SQL text checks, then summarize restart/apply steps.
+- Open Questions:
+  - Whether every existing product should receive a specific icon immediately is **UNCONFIRMED**; current implementation will leave this as Dashboard-managed configuration.
+
+- Current progress update for active latest request:
+- Done:
+  - Added `helpers/telegram_ui.py` with shared Telegram inline-button formatting:
+    - practical default label limit 64 characters, env-overridable via `BOT_INLINE_BUTTON_TEXT_MAX`
+    - product icon fallback `📦`
+    - product labels preserve icon, price, and stock/sold-out suffix while showing longer names
+    - folder and history labels now share the same fitting logic
+  - Wired the new formatter into:
+    - `keyboards/inline.py` product/folder/admin product buttons
+    - `helpers/history_menu.py` order-history buttons
+    - `handlers/shop.py` product detail title
+    - `helpers/shop_catalog.py` folder message copy
+    - `locales/vi.py` and `locales/en.py` shop/history copy
+  - Added `telegram_icon` support to Bot product data mapping in `database/supabase_db.py`.
+  - Updated product RPC SQL in both `supabase_schema_bot_product_rpc_canonical.sql` and `supabase_schema_all_in_one.sql`.
+  - Updated Dashboard Products page to load/display/add/edit `telegram_icon`.
+  - Added `BOT_INLINE_BUTTON_TEXT_MAX=64` to root `.env.example`.
+  - Verification:
+    - Python AST parse passed for changed Bot files.
+    - `import run` passed.
+    - Dashboard TypeScript check passed.
+    - SQL text check confirms `telegram_icon` is inside the mirrored all-in-one canonical RPC section.
+    - `git diff --check` passed for touched files with only existing LF/CRLF warnings.
+- Now:
+  - Summarize changes and required operator steps.
+- Next:
+  - Apply `supabase_schema_all_in_one.sql` once, restart Bot and Dashboard, then edit product icons in Dashboard Products.
+- Open Questions:
+  - None blocking.
+
+- Current scope correction (latest request): product icons must be Telegram custom emoji button icons, not plain Unicode emoji prefixed into the button text.
+- User clarification:
+  - Screenshot shows Telegram custom emoji from a Telegram pack/channel and product buttons rendering platform icons before text.
+  - Desired behavior is to use Telegram's native custom emoji icon support for inline buttons.
+- Constraints / assumptions:
+  - Keep existing `telegram_icon` as a plain emoji fallback for bots/accounts that cannot use a given custom emoji.
+  - Add a separate custom emoji ID field; the visible emoji glyph is not enough for Telegram custom emoji rendering.
+  - New SQL must also be mirrored into `supabase_schema_all_in_one.sql`.
+  - Preserve unrelated dirty worktree changes.
+- Key decision:
+  - Store `telegram_icon_custom_emoji_id` on products and pass it to `InlineKeyboardButton(..., icon_custom_emoji_id=...)` when available.
+- Done:
+  - Re-read the ledger after context compaction.
+  - Verified from prior local check that installed `python-telegram-bot` 22.7 supports `InlineKeyboardButton.icon_custom_emoji_id`.
+- Now:
+  - Patch schema, Bot keyboard builders, product data mapping, Dashboard product editor, and add a helper command for admins to extract custom emoji IDs.
+- Next:
+  - Run Python import/AST checks, Dashboard TypeScript check, SQL text checks, and summarize how to apply/use the new Telegram custom emoji ID field.
+- Open Questions:
+  - Whether the bot has permission/ability to use every desired custom emoji is **UNCONFIRMED**; Telegram only renders the icon if the bot can use that custom emoji in messages.
+
+- Current progress update for custom Telegram icon correction:
+- Done:
+  - Added `telegram_icon_custom_emoji_id` support to the canonical product RPC SQL in both `supabase_schema_bot_product_rpc_canonical.sql` and `supabase_schema_all_in_one.sql`.
+  - Kept `telegram_icon` as a plain emoji/text fallback and clarified its SQL comment.
+  - Added product data mapping for `telegram_icon_custom_emoji_id` in `database/supabase_db.py`, including fallback selects for databases that have not applied the new column yet.
+  - Added `helpers.telegram_ui.build_product_button_kwargs(...)` so product inline buttons pass `icon_custom_emoji_id` separately from the text label.
+  - Updated `keyboards/inline.py` customer product buttons and admin product/stock/sold-code product buttons to use Telegram custom emoji IDs when available.
+  - Added admin `/emojiid` command to extract custom emoji IDs from a command message or a replied-to message containing Telegram custom emoji.
+  - Added `/emojiid` to admin command menu registration.
+  - Updated Dashboard Products page with:
+    - `telegram_icon_custom_emoji_id` load/add/edit support
+    - separate fallback emoji field and custom emoji ID field
+    - product table display for both fallback and custom emoji ID
+  - Raised `python-telegram-bot` requirement to `>=22.7` because the code now uses `InlineKeyboardButton.icon_custom_emoji_id`.
+- Verification:
+  - Local installed `python-telegram-bot` version is `22.7`, and `InlineKeyboardButton.__init__` supports `icon_custom_emoji_id`.
+  - Constructing an `InlineKeyboardButton(..., icon_custom_emoji_id='5368324170671202286')` works locally.
+  - No-write Python AST parse passed for `helpers/telegram_ui.py`, `keyboards/inline.py`, `database/supabase_db.py`, `handlers/admin.py`, and `run.py`.
+  - `import run` passed.
+  - Dashboard TypeScript check passed with `tsc --noEmit`.
+  - SQL text check confirmed `telegram_icon_custom_emoji_id` is present in the all-in-one canonical product RPC section.
+  - `git diff --check` passed for touched files with only LF/CRLF normalization warnings.
+  - `py_compile` was attempted but hit Windows access denied writing existing `__pycache__`; no-write AST verification was used instead.
+- Now:
+  - Summarize the corrected implementation and operator steps.
+- Next:
+  - Apply `supabase_schema_all_in_one.sql`, restart Bot and Dashboard, then use `/emojiid` to capture Telegram custom emoji IDs and paste them into Dashboard Products.
+- Open Questions:
+  - Whether the bot owner/account can use every desired custom emoji remains **UNCONFIRMED**; Telegram Bot API restricts custom emoji button icons to bots/accounts allowed to use those custom emoji.
+
+- Current scope add-on (latest request): answer what features/hạng mục remain after the recent Bot/Dashboard work.
+- Constraints / assumptions:
+  - Treat the question as asking for remaining recommended features/improvements, not a request to implement code yet.
+  - Use `CONTINUITY.md` as canonical state; feature docs were also read for context, but some doc next-step items may be stale compared with ledger progress.
+- Done:
+  - Re-read `CONTINUITY.md` in full.
+  - Re-read `TELEGRAM_BOT_FEATURES.md`, `PROJECT_AUDIT_REPORT.md`, and `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md` for current feature inventory and remaining recommendations.
+- Now:
+  - Reply with a concise prioritized Vietnamese list of what remains: deploy/smoke tests, admin audit log, risky mutation API hardening, status/health expansion, migration/license clarity, UI click testing, and optional UX/product features.
+- Next:
+  - If user chooses a batch, implement that batch.
+- Open Questions:
+  - Whether the user means "remaining to implement" or "current available features" is mildly ambiguous; answer will include both the high-level current coverage and the remaining recommended backlog.
+
+- Current scope add-on (latest request): review `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md` before running the proposed next steps and design Dashboard UX/UI best practices.
+- Constraints / assumptions:
+  - This turn is advisory/design review only unless the user explicitly asks to implement.
+  - Use `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md` as the local feature inventory source, but cross-check relevant Dashboard code structure where useful because the document may be stale after recent fixes.
+  - Do not expose secrets from `.env` files.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read `CONTINUITY.md` in full after context compaction.
+  - Latest Dashboard UX/UI review request captured in the continuity ledger.
+- Now:
+  - Inspect `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md` and relevant Admin Dashboard layout/page/style files.
+- Next:
+  - Provide a Vietnamese current-feature health assessment and a practical best-practice UX/UI blueprint for approval before implementation.
+- Open Questions:
+  - None.
+
+- Current progress update for Dashboard UX/UI review:
+- Done:
+  - Read `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md`.
+  - Inspected Dashboard app shell, global CSS, Admin home page, Products/Orders evidence, package dependencies, and page sizes.
+  - Findings:
+    - Dashboard feature coverage is broad: overview, products/folders, stock/custom-check, orders, direct orders, finance queues, users/broadcast, reports, licenses, settings.
+    - Feature doc is stale in places: Orders display name and Newsreader warning are already fixed; Products now includes `telegram_icon` and `telegram_icon_custom_emoji_id`, but the doc does not mention those fields yet.
+    - Current UI is serviceable but visually more decorative than ideal for an operations dashboard: radial background, large 18px cards, broad single pages, many direct controls.
+    - Largest Admin Bot pages are monolithic: Products ~1372 lines, Stock ~1251, Licenses ~914, Users ~736.
+    - Some high-risk mutations still happen from client pages, especially Products and Stock, matching earlier hardening backlog.
+- Now:
+  - Compose final Vietnamese UX/UI best-practice assessment and implementation-ready design blueprint.
+- Next:
+  - If user approves, update docs/design spec first or implement the shared Dashboard shell/component redesign batch.
+- Open Questions:
+  - None.
+
+- Current scope completion (latest batch request): implement all concrete Admin Dashboard + Telegram Bot proposals in one batch.
+- Done:
+  - Added Admin ops hardening SQL in `supabase_schema_admin_ops_hardening.sql` and mirrored it into `supabase_schema_all_in_one.sql`:
+    - `admin_audit_logs`
+    - `admin_record_audit_log(...)`
+    - `admin_ops_health_snapshot(...)`
+  - Added Dashboard server APIs:
+    - `/api/admin/health`
+    - `/api/admin/audit`
+    - `/api/admin/products`
+    - `/api/admin/stock`
+    - `/api/direct-orders/status`
+    - audit wiring for settings, finance, direct-order fulfillment/status, product and stock actions.
+  - Hardened Dashboard client flows:
+    - product hide/delete/restore/folder delete now go through server API.
+    - stock add/update/delete/bulk actions now go through server API.
+    - direct-order failed/cancel now goes through server API.
+  - Added Dashboard UX updates:
+    - grouped ops sidebar with health badge.
+    - System Health page.
+    - shared `AdminUi` helpers.
+    - dashboard home health cards.
+    - reports CSV export.
+    - ops-oriented CSS refresh.
+  - Expanded Telegram Bot:
+    - `/search <keyword>` command.
+    - `/status` includes ops health, delivery outbox and low-stock preview.
+    - Supabase helpers for product search, low-stock, delivery outbox stats and admin ops health snapshot.
+  - Updated documentation:
+    - `PROJECT_AUDIT_REPORT.md`
+    - `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md`
+    - `TELEGRAM_BOT_FEATURES.md`
+    - `BOT_DASHBOARD_DEPLOYMENT_CHECKLIST.md`
+  - Verification completed:
+    - Dashboard TypeScript check passed with `tsc --noEmit`.
+    - Python no-write AST parse passed for changed Bot files using `utf-8-sig` because `keyboards/inline.py` has a BOM.
+    - `import run` passed.
+    - SQL text check confirmed all-in-one contains `admin_ops_health_snapshot`, `admin_audit_logs`, `telegram_icon_custom_emoji_id`, and product RPC content.
+    - stale-doc text search returned no targeted stale next-step matches.
+    - `git diff --check` passed with LF/CRLF warnings only.
+    - Dashboard dev server required escalation because sandboxed Next failed with `spawn EPERM`; escalated server is running at `http://127.0.0.1:3002` and `/login` returned HTTP 200.
+- Now:
+  - Final response to user with concise summary, verification, dev-server URL, and remaining deploy/smoke actions.
+- Next:
+  - Operator applies `supabase_schema_all_in_one.sql`, restarts/redeploys Bot and Dashboard, then smoke-tests via `BOT_DASHBOARD_DEPLOYMENT_CHECKLIST.md`.
+- Open Questions:
+  - Real authenticated browser click-test remains blocked in this session because no callable `@browser-use` tool is exposed.
+
+- Current scope add-on (latest request): improve Admin Dashboard UX and fix Orders user identity display.
+- User requirements:
+  - Orders must show `Username` and `Tên người dùng` correctly.
+  - Sidebar should use best-practice expandable/collapsible sub-page groups.
+  - Product/Stock and similar pages should not expose Create/Edit/Delete forms all the time; move noisy forms/actions into cleaner progressive disclosure such as modals/drawers/action panels.
+  - Button palette should better match the current light ops background.
+- Constraints / assumptions:
+  - Preserve unrelated dirty worktree changes.
+  - This is a Dashboard UX implementation request, not only advisory.
+  - Avoid adding new UI dependency unless necessary; current project has no icon library.
+  - Continue using operational-dashboard style: dense, restrained, 8px radius, no nested decorative cards.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Latest UX request captured in ledger.
+  - Inspected Dashboard Orders page, AppShell/sidebar, Product page, and Stock page.
+  - Found Orders user identity bug: page selects `users.display_name`, but current schema stores Telegram names as `first_name`/`last_name`.
+  - Confirmed Product/Stock pages have large always-visible action forms; both already have modal state for destructive/edit operations, so the clean path is to move create/bulk action forms into explicit action panels/dialogs.
+  - Patched Orders page to query `first_name`/`last_name` and build `Tên người dùng` locally.
+  - Patched AppShell sidebar into collapsible nav groups with active-group auto-open and `localStorage` persistence.
+  - Patched Products page so add product/folder/format forms are opened on demand instead of always visible.
+  - Patched Stock page so stock import/delete and custom-check panels open on demand after product selection.
+  - Updated Dashboard CSS with a calmer green-teal primary palette, collapsible nav styling, section headers, and action-panel styling.
+  - Verification completed:
+    - Dashboard TypeScript check passed with `admin_dashboard_telegram_bot/.\\node_modules\\.bin\\tsc.cmd --noEmit -p .\\tsconfig.json`.
+    - `git diff --check` for touched root/dashboard paths passed with only existing LF/CRLF warning for `CONTINUITY.md`.
+    - Local Dashboard routes `/login`, `/products`, `/stock`, and `/orders` returned HTTP 200 from `http://127.0.0.1:3002`.
+  - Note: `admin_dashboard_telegram_bot` is a nested git repository and direct nested `git status` is blocked by dubious ownership safety until marked safe; this does not affect the code verification.
+- Now:
+  - Summarize completed UX fixes and verification to the user.
+- Next:
+  - User should test authenticated Product/Stock/Orders clicks in browser, especially action-panel open/close and Orders identity display against real Supabase data.
+- Open Questions:
+  - Whether all forms across every Dashboard page must be converted immediately is broad; implement the highest-impact Product/Stock patterns first and add shared primitives for extending the rest.
+
+- Current scope add-on (latest request): design a best-practice Telegram Bot Sale feature before implementation.
+- User ideas:
+  - New time-window "Sale" feature.
+  - Sale items should default to Telegram custom emoji ID `6055192572056309981`.
+  - When adding a Sale item, admin should choose either stock from an existing product or add new stock.
+- Constraints / assumptions:
+  - Advisory/design request for now; do not implement code until user approves.
+  - Keep original product price/history intact; Sale should be an overlay/campaign, not a destructive edit to `products.price`.
+  - Avoid double-selling stock when using existing product stock.
+  - Reuse existing Telegram custom emoji support via `telegram_icon_custom_emoji_id` where practical.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Latest Sale feature request captured in the continuity ledger.
+- Now:
+  - Return Vietnamese best-practice design covering data model, stock handling, Dashboard UX, Bot UX, checkout rules, risks, and recommended MVP.
+- Next:
+  - If user approves, implement SQL schema, Dashboard Sales management UI, Bot sale listing/detail/checkout validation, and fulfillment updates.
+- Open Questions:
+  - Whether Sale applies only to Telegram Bot or also Website is **UNCONFIRMED**.
+  - Exact discount model (fixed sale price, percent discount, tier override, promo override) is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): implement the full Telegram Bot Sale feature including suggested additions.
+- User requirements:
+  - Implement time-window Sale campaigns.
+  - Sale items default to Telegram custom emoji ID `6055192572056309981`.
+  - Admin can create Sale items using existing product stock reservations or newly added stock.
+  - Include suggested additions: campaign limits, per-user limits, pause/activate/end controls, analytics/audit, conflict handling, countdown/stock UX, checkout validation, and operational docs.
+- Constraints / assumptions:
+  - Scope is Bot-first Sale; Website Sale UI remains out of scope unless existing shared fulfillment code requires compatible fields.
+  - Keep product base price/history unchanged; Sale pricing is an overlay with order snapshots.
+  - New SQL must be created as a focused split file and mirrored into `supabase_schema_all_in_one.sql`.
+  - Preserve unrelated dirty worktree changes.
+  - Avoid double-selling stock by reserving existing stock IDs for Sale and validating in atomic fulfillment functions.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Latest implementation request captured in the continuity ledger.
+  - Inspected current Bot checkout/product/stock flow, Dashboard nav/API conventions, and schema patterns.
+  - Added initial focused split SQL file `supabase_schema_bot_sale_campaigns.sql` for Bot Sale campaigns, items, stock reservations, sale-aware direct orders/orders metadata, active-sale RPCs, balance/direct/Binance sale purchase helpers, and sale-aware direct-order fulfillment.
+  - Tightened Sale SQL before integration:
+    - removed `FOR UPDATE` from reads of `get_active_sale_product(...)`
+    - made expired Sale holds cancel pending sale direct orders and release reservations
+    - made direct-order fulfillment respect `sale_hold_until`
+  - Mirrored `supabase_schema_bot_sale_campaigns.sql` into `supabase_schema_all_in_one.sql`.
+  - Wired Bot runtime for Sale:
+    - Added Sale DB helpers for active-sale catalog/detail, balance purchase, VietQR sale direct order, and Binance sale direct order.
+    - Added `/sale`, Sale catalog, Sale product detail, Sale quantity prompt, Sale balance checkout, Sale VietQR checkout, and Sale Binance checkout.
+    - Added Sale entry button in the main menu and Shop catalog when active Sale items exist.
+  - Added Dashboard Sales management:
+    - `/api/admin/sales` server route with campaign create/status actions, add item from existing stock reservation, add item from new stock, item enable/disable, conflict checks, and audit logging.
+    - `/sales` page with campaign panel, item panel, stock mode switch, campaign/item tables, reservation stats, and status controls.
+    - Added Sales to Dashboard Catalog navigation.
+- Now:
+  - Update docs, then run Python/TypeScript/SQL verification and fix issues found.
+- Next:
+  - Add Sale SQL/RPCs, wire Dashboard Sales management, wire Bot active Sale catalog/detail/checkout paths, update docs, then run SQL/text/TypeScript/Python checks.
+- Open Questions:
+  - Exact discount model remains **UNCONFIRMED**; implementation will support fixed sale price first plus percent-display metadata where practical.
+  - Whether Sale should be visible on Website remains **UNCONFIRMED**; implementation keeps Bot-first behavior.
+
+- Current scope completion update (Sale implementation):
+- Done:
+  - Completed Telegram Bot Sale feature implementation end to end for Bot-first usage.
+  - SQL:
+    - Created `supabase_schema_bot_sale_campaigns.sql`.
+    - Mirrored the Sale section into `supabase_schema_all_in_one.sql`.
+    - Added Sale campaigns/items/stock reservations, Sale metadata on `orders` and `direct_orders`, active Sale RPCs, Sale balance/direct/Binance order helpers, stock hold release, and sale-aware direct-order fulfillment.
+  - Bot:
+    - Added `/sale`, Sale catalog/detail, Sale entry buttons, Sale quantity flow, Sale balance checkout, Sale VietQR checkout, and Sale Binance checkout.
+    - Sale items default to Telegram custom emoji ID `6055192572056309981`.
+    - Sale pricing/limits/stock holds are validated in Supabase RPCs during checkout/fulfillment.
+  - Dashboard:
+    - Added `/sales` management page.
+    - Added `/api/admin/sales` server API for campaign create/status, add item from existing stock, add item with new stock, enable/disable item, conflict checks, reservation stats, and audit logging.
+    - Added Sales navigation under Catalog.
+  - Documentation:
+    - Updated `BOT_DASHBOARD_DEPLOYMENT_CHECKLIST.md`, `TELEGRAM_BOT_FEATURES.md`, `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md`, and `PROJECT_AUDIT_REPORT.md`.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - Python no-write AST parse passed for changed Bot files.
+    - `.\venv\Scripts\python.exe -c "import run; print('import run ok')"` passed.
+    - SQL text checks confirmed all-in-one includes the Sale section and key Sale RPCs.
+    - `git diff --check` passed for changed paths with only existing LF/CRLF normalization warnings.
+    - Local Dashboard route `http://127.0.0.1:3002/sales` returned HTTP 200.
+    - System Python `import run` failed because `telegram` is not installed globally; venv import passed and is the relevant runtime check.
+- Now:
+  - Summarize completed implementation, verification, and operator deployment steps to the user.
+- Next:
+  - Operator applies `supabase_schema_all_in_one.sql`, restarts/redeploys Bot and Dashboard, then smoke-tests Dashboard `/sales` and Bot `/sale` purchase paths.
+- Open Questions:
+  - Real Supabase SQL execution is not run in this local session; deployment must apply the SQL and verify against the target database.
+  - Authenticated browser click-test of `/sales` was not run; route-level HTTP check passed.
+
+- Current scope add-on (latest request): install/add `certifi` to fix Telegram API SSL verification failures (`SSL: CERTIFICATE_VERIFY_FAILED: self signed certificate in certificate chain`).
+- Constraints / assumptions:
+  - Target is the Telegram Bot Python runtime in this repository.
+  - Prefer updating dependency declarations as well as the local venv so reinstall/deploy keeps the fix.
+  - Preserve unrelated dirty worktree changes.
+  - Network access may require escalation if sandboxed `pip install` cannot reach PyPI.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Latest dependency-fix request captured in the continuity ledger.
+  - Confirmed the active bot venv already has `certifi` installed at version `2026.4.22`.
+  - Ran `.\venv\Scripts\python.exe -m pip install certifi`; pip reported the requirement is already satisfied.
+  - Added `certifi>=2026.4.22` to root `requirements.txt` so reinstall/deploy keeps the dependency explicit.
+  - Verified `certifi` imports from the bot venv and resolves CA bundle path `venv\Lib\site-packages\certifi\cacert.pem`.
+  - Ran `.\venv\Scripts\python.exe -m pip check`; no broken requirements were found.
+- Now:
+  - Summarize the dependency update and operational note to the user.
+- Next:
+  - Restart/redeploy the Telegram Bot runtime so the environment uses the installed dependency.
+- Open Questions:
+  - Deployment appears to use root `requirements.txt`; no other active Python dependency file was found outside ignored generated/vendor directories.

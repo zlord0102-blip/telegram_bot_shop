@@ -1,5 +1,15 @@
 ﻿from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 import math
+from helpers.telegram_ui import (
+    DEFAULT_SALE_CUSTOM_EMOJI_ID,
+    build_folder_button_label as _ui_folder_button_label,
+    build_product_button_label as _ui_product_button_label,
+    build_product_button_kwargs as _ui_product_button_kwargs,
+    fit_button_text,
+    format_vnd_dot,
+    get_product_custom_emoji_id,
+    normalize_product_icon,
+)
 
 
 def _format_vnd_dot(amount) -> str:
@@ -18,25 +28,24 @@ def _clip_button_text(text: str, limit: int = 28) -> str:
 
 
 def _build_product_button_label(product: dict, lang: str = "vi") -> str:
-    stock = int(product.get("stock") or 0)
-    name_text = _clip_button_text(product.get("name") or "", limit=40)
-
-    if lang == "en":
-        if product.get("price_usdt") and product["price_usdt"] > 0:
-            price_text = f"{product['price_usdt']} USDT"
-        else:
-            price_text = "N/A"
-        status_text = "❌ Sold out" if stock <= 0 else f"📦 {stock}"
-        return f"{name_text} | {price_text} | {status_text}"
-
-    price_text = f"{_format_vnd_dot(product.get('price'))} đ"
-    status_text = "❌ Hết" if stock <= 0 else f"📦 {stock}"
-    return f"{name_text} | {price_text} | {status_text}"
+    return _ui_product_button_label(product, lang=lang)
 
 
 def _build_folder_button_label(folder: dict, lang: str = "vi") -> str:
-    name_text = _clip_button_text(folder.get("name") or "", limit=40)
-    return f"📁 {name_text}" if lang != "en" else f"📁 {name_text}"
+    return _ui_folder_button_label(folder, lang=lang)
+
+
+def _product_inline_button(product: dict, label: str, callback_data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(
+        label,
+        callback_data=callback_data,
+        **_ui_product_button_kwargs(product),
+    )
+
+
+def _build_admin_product_label(product: dict, text: str) -> str:
+    prefix = "" if get_product_custom_emoji_id(product) else f"{normalize_product_icon(product.get('telegram_icon'))} "
+    return fit_button_text(f"{prefix}{text}")
 
 
 def _safe_optional_int(value):
@@ -126,6 +135,7 @@ def admin_reply_keyboard():
 
 def main_menu_keyboard():
     keyboard = [
+        [InlineKeyboardButton("SALE", callback_data="sale_0", icon_custom_emoji_id=DEFAULT_SALE_CUSTOM_EMOJI_ID)],
         [InlineKeyboardButton("🛒 Mua hàng", callback_data="shop")],
         [InlineKeyboardButton("💰 Nạp tiền", callback_data="deposit")],
         [InlineKeyboardButton("👤 Tài khoản", callback_data="account")],
@@ -149,13 +159,28 @@ def admin_sold_codes_keyboard(products):
     """Keyboard chọn sản phẩm để xem code đã bán"""
     keyboard = []
     for p in products:
-        keyboard.append([InlineKeyboardButton(f"📦 {p['name']}", callback_data=f"admin_soldby_product_{p['id']}")])
+        keyboard.append([
+            _product_inline_button(
+                p,
+                _build_admin_product_label(p, str(p.get("name") or "Sản phẩm")),
+                callback_data=f"admin_soldby_product_{p['id']}",
+            )
+        ])
     keyboard.append([InlineKeyboardButton("🔍 Tìm theo User ID", callback_data="admin_soldby_user")])
     keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
-def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int = 10, folders=None):
+def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int = 10, folders=None, has_sale: bool = False):
     keyboard = []
+    if has_sale:
+        sale_label = "SALE" if lang == "en" else "SALE đang mở"
+        keyboard.append([
+            InlineKeyboardButton(
+                sale_label,
+                callback_data="sale_0",
+                icon_custom_emoji_id=DEFAULT_SALE_CUSTOM_EMOJI_ID,
+            )
+        ])
     folders = folders or []
     valid_folder_ids = {
         _safe_optional_int(folder.get("id"))
@@ -187,7 +212,7 @@ def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int 
             keyboard.append([InlineKeyboardButton(label, callback_data=f"shopfolder_{folder_id}_0_{safe_page}")])
         else:
             label = _build_product_button_label(entry_value, lang=lang)
-            keyboard.append([InlineKeyboardButton(label, callback_data=f"buy_{entry_value['id']}")])
+            keyboard.append([_product_inline_button(entry_value, label, callback_data=f"buy_{entry_value['id']}")])
 
     if total_pages > 1:
         prev_text = "⬅️ Prev" if lang == "en" else "⬅️ Trước"
@@ -203,6 +228,41 @@ def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int 
     refresh_text = "🔄 Refresh" if lang == 'en' else "🔄 Cập nhật"
     delete_text = "🗑 Delete" if lang == 'en' else "🗑 Xóa"
     keyboard.append([InlineKeyboardButton(refresh_text, callback_data=f"shop_{safe_page}")])
+    keyboard.append([InlineKeyboardButton(delete_text, callback_data="delete_msg")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+def sale_products_keyboard(products, lang: str = "vi", page: int = 0, page_size: int = 10):
+    keyboard = []
+    total_products = len(products or [])
+    total_pages = max(1, math.ceil(total_products / max(1, page_size)))
+    safe_page = max(0, min(page, total_pages - 1))
+
+    start = safe_page * page_size
+    end = start + page_size
+    page_products = (products or [])[start:end]
+
+    for product in page_products:
+        label = _build_product_button_label(product, lang=lang)
+        sale_item_id = product.get("sale_item_id")
+        keyboard.append([_product_inline_button(product, label, callback_data=f"salebuy_{sale_item_id}")])
+
+    if total_pages > 1:
+        prev_text = "⬅️ Prev" if lang == "en" else "⬅️ Trước"
+        next_text = "Next ➡️" if lang == "en" else "Sau ➡️"
+        prev_page = safe_page - 1 if safe_page > 0 else safe_page
+        next_page = safe_page + 1 if safe_page < total_pages - 1 else safe_page
+        keyboard.append([
+            InlineKeyboardButton(prev_text, callback_data=f"sale_{prev_page}"),
+            InlineKeyboardButton(f"{safe_page + 1}/{total_pages}", callback_data=f"sale_{safe_page}"),
+            InlineKeyboardButton(next_text, callback_data=f"sale_{next_page}"),
+        ])
+
+    refresh_text = "🔄 Refresh" if lang == "en" else "🔄 Cập nhật"
+    back_text = "🔙 Shop" if lang == "en" else "🔙 Shop"
+    delete_text = "🗑 Delete" if lang == "en" else "🗑 Xóa"
+    keyboard.append([InlineKeyboardButton(refresh_text, callback_data=f"sale_{safe_page}")])
+    keyboard.append([InlineKeyboardButton(back_text, callback_data="shop")])
     keyboard.append([InlineKeyboardButton(delete_text, callback_data="delete_msg")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -227,7 +287,7 @@ def folder_products_keyboard(
 
     for product in page_products:
         label = _build_product_button_label(product, lang=lang)
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"buy_{product['id']}")])
+        keyboard.append([_product_inline_button(product, label, callback_data=f"buy_{product['id']}")])
 
     if total_pages > 1:
         prev_text = "⬅️ Prev" if lang == "en" else "⬅️ Trước"
@@ -271,7 +331,11 @@ def admin_products_keyboard(products):
     keyboard = []
     for p in products:
         keyboard.append([
-            InlineKeyboardButton(f"📦 {p['name']} - {p['price']:,}đ", callback_data=f"admin_viewprod_{p['id']}"),
+            _product_inline_button(
+                p,
+                _build_admin_product_label(p, f"{p['name']} - {format_vnd_dot(p.get('price'))}đ"),
+                callback_data=f"admin_viewprod_{p['id']}",
+            ),
             InlineKeyboardButton("❌", callback_data=f"admin_del_{p['id']}")
         ])
     keyboard.append([InlineKeyboardButton("➕ Thêm sản phẩm", callback_data="admin_add_product")])
@@ -281,14 +345,26 @@ def admin_products_keyboard(products):
 def admin_stock_keyboard(products):
     keyboard = []
     for p in products:
-        keyboard.append([InlineKeyboardButton(f"{p['name']} (còn {p['stock']})", callback_data=f"admin_stock_{p['id']}")])
+        keyboard.append([
+            _product_inline_button(
+                p,
+                _build_admin_product_label(p, f"{p['name']} (còn {p['stock']})"),
+                callback_data=f"admin_stock_{p['id']}",
+            )
+        ])
     keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
 def admin_view_stock_keyboard(products):
     keyboard = []
     for p in products:
-        keyboard.append([InlineKeyboardButton(f"📦 {p['name']} ({p['stock']} stock)", callback_data=f"admin_viewstock_{p['id']}")])
+        keyboard.append([
+            _product_inline_button(
+                p,
+                _build_admin_product_label(p, f"{p['name']} ({p['stock']} stock)"),
+                callback_data=f"admin_viewstock_{p['id']}",
+            )
+        ])
     keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
@@ -325,7 +401,7 @@ def pending_deposits_keyboard(deposits):
     for d in deposits:
         keyboard.append([
             InlineKeyboardButton(f"💰 #{d[0]} - {d[2]:,}đ", callback_data=f"admin_confirm_{d[0]}"),
-            InlineKeyboardButton("", callback_data=f"admin_cancel_{d[0]}")
+            InlineKeyboardButton("❌ Hủy", callback_data=f"admin_cancel_{d[0]}")
         ])
     keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)

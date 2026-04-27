@@ -1,5 +1,5 @@
-from database import get_bot_product_folders, get_products
-from keyboards.inline import folder_products_keyboard, products_keyboard
+from database import get_active_sale_products, get_bot_product_folders, get_products
+from keyboards.inline import folder_products_keyboard, products_keyboard, sale_products_keyboard
 from helpers.ui import get_shop_menu_text, get_shop_page_size
 
 
@@ -38,11 +38,19 @@ def _build_folder_groups(products, folders):
 
 async def build_shop_top_level_view(lang: str, page: int = 0):
     products = await get_products()
+    sale_products = await get_active_sale_products()
     folders = await get_bot_product_folders()
     page_size = await get_shop_page_size()
     text = await get_shop_menu_text(lang)
     visible_folders, _, _ = _build_folder_groups(products, folders)
-    markup = products_keyboard(products, lang=lang, page=page, page_size=page_size, folders=visible_folders)
+    markup = products_keyboard(
+        products,
+        lang=lang,
+        page=page,
+        page_size=page_size,
+        folders=visible_folders,
+        has_sale=bool(sale_products),
+    )
     return text, markup
 
 
@@ -59,14 +67,45 @@ async def build_shop_folder_view(folder_id: int, lang: str, page: int = 0, origi
         return None
 
     if lang == "en":
-        text = f"📁 {target_folder['name']}\n\nChoose a product below."
+        text = f"📁 {target_folder['name']}\nChoose an item below to view price, stock, and checkout options."
     else:
-        text = f"📁 {target_folder['name']}\n\nChọn sản phẩm bên dưới."
+        text = f"📁 {target_folder['name']}\nChọn sản phẩm bên dưới để xem giá, tồn kho và thanh toán."
 
     markup = folder_products_keyboard(
         grouped_products.get(folder_id, []),
         folder_id=folder_id,
         origin_top_page=origin_top_page,
+        lang=lang,
+        page=page,
+        page_size=page_size,
+    )
+    return text, markup
+
+
+async def build_sale_catalog_view(lang: str, page: int = 0):
+    sale_products = await get_active_sale_products()
+    page_size = await get_shop_page_size()
+
+    if lang == "en":
+        text = (
+            "SALE is open.\n"
+            "These deals have limited time and limited reserved stock."
+        )
+        empty_text = "No active Sale item right now. Please check the Shop again later."
+    else:
+        text = (
+            "SALE đang mở.\n"
+            "Các deal có thời hạn và số lượng stock riêng, hết là dừng."
+        )
+        empty_text = "Hiện chưa có món Sale đang hoạt động. Bạn quay lại Shop sau nhé."
+
+    if not sale_products:
+        from keyboards.inline import back_keyboard
+
+        return empty_text, back_keyboard("shop")
+
+    markup = sale_products_keyboard(
+        sale_products,
         lang=lang,
         page=page,
         page_size=page_size,

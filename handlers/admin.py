@@ -1,13 +1,14 @@
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, MessageEntity
 from telegram.ext import ContextTypes, ConversationHandler, MessageHandler, filters
 from database import (
     get_products, add_product, delete_product, add_stock_bulk,
     get_pending_deposits, confirm_deposit, cancel_deposit, get_stats,
     get_pending_withdrawals, confirm_withdrawal, cancel_withdrawal,
+    get_pending_direct_orders, get_pending_binance_direct_orders, get_pending_usdt_withdrawals,
     get_bank_settings, set_setting, get_setting, get_all_user_ids,
     get_stock_by_product, get_stock_detail, update_stock_content, delete_stock, get_product,
     delete_all_stock, export_stock, get_sold_codes_by_product, get_sold_codes_by_user, search_user_by_id,
-    get_user_language
+    get_user_language, get_admin_ops_health_snapshot
 )
 from keyboards import (
     admin_menu_keyboard, admin_products_keyboard, admin_stock_keyboard,
@@ -16,6 +17,8 @@ from keyboards import (
     admin_stock_list_keyboard, admin_stock_detail_keyboard, admin_sold_codes_keyboard
 )
 import io
+import json
+import os
 from config import ADMIN_IDS
 from helpers.ui import get_user_keyboard
 
@@ -42,6 +45,131 @@ async def admin_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🔐 ADMIN PANEL\n\nChọn chức năng quản trị:",
         reply_markup=admin_reply_keyboard()
     )
+
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.message.reply_text("❌ Bạn không có quyền truy cập!")
+        return
+
+    async def count_or_error(label: str, loader):
+        try:
+            return label, len(await loader()), None
+        except Exception as exc:
+            return label, None, str(exc)[:120]
+
+    checks = [
+        await count_or_error("Nạp VND pending", get_pending_deposits),
+        await count_or_error("Rút VND pending", get_pending_withdrawals),
+        await count_or_error("Rút USDT pending", get_pending_usdt_withdrawals),
+        await count_or_error("Direct VietQR pending", get_pending_direct_orders),
+        await count_or_error("Direct Binance pending", get_pending_binance_direct_orders),
+    ]
+
+    try:
+        ops_health = await get_admin_ops_health_snapshot(low_stock_threshold=5)
+    except Exception as exc:
+        ops_health = {"error": str(exc)[:180]}
+
+    try:
+        raw_health = await get_setting("bot_checker_health", "")
+        checker_health = json.loads(raw_health) if raw_health else {}
+        if not isinstance(checker_health, dict):
+            checker_health = {}
+    except Exception as exc:
+        checker_health = {"lastError": f"Không đọc được checker health: {str(exc)[:120]}"}
+
+    def has_env(name: str) -> str:
+        return "✅" if str(os.getenv(name, "")).strip() else "❌"
+
+    lines = [
+        "🩺 BOT STATUS",
+        "",
+        "Runtime: Supabase-only",
+        "",
+        "Env:",
+        f"- SUPABASE_URL: {has_env('SUPABASE_URL')}",
+        f"- SUPABASE_SECRET_KEY: {has_env('SUPABASE_SECRET_KEY')}",
+        f"- BOT_TOKEN: {has_env('BOT_TOKEN')}",
+        "",
+        "Hàng đợi:",
+    ]
+    for label, count, error in checks:
+        if error:
+            lines.append(f"- {label}: lỗi ({error})")
+        else:
+            lines.append(f"- {label}: {count}")
+
+    lines.extend([
+        "",
+        "Checker:",
+        f"- runtime: {checker_health.get('runtime') or 'supabase'}",
+        f"- loop: {checker_health.get('loopState') or 'unknown'}",
+        f"- mode: {checker_health.get('mode') or 'unknown'}",
+        f"- heartbeat: {checker_health.get('heartbeatAt') or 'chưa có'}",
+        f"- last success: {checker_health.get('lastSuccessAt') or 'chưa có'}",
+    ])
+    last_error = str(checker_health.get("lastError") or "").strip()
+    if last_error:
+        lines.append(f"- last error: {last_error[:300]}")
+
+    if isinstance(ops_health, dict) and ops_health.get("error"):
+        lines.extend(["", f"Ops health: lỗi ({ops_health['error']})"])
+    else:
+        queues = ops_health.get("queues", {}) if isinstance(ops_health, dict) else {}
+        delivery_outbox = queues.get("deliveryOutbox") or queues.get("delivery_outbox") or {}
+        stock_health = ops_health.get("stock", {}) if isinstance(ops_health, dict) else {}
+        retry_due = delivery_outbox.get("retryDue", delivery_outbox.get("retry_due", 0))
+        lines.extend([
+            "",
+            "Ops health:",
+            f"- outbox pending: {delivery_outbox.get('pending', 0)}",
+            f"- outbox retry due: {retry_due}",
+            f"- outbox failed: {delivery_outbox.get('failed', 0)}",
+            f"- low stock <= {stock_health.get('threshold', 5)}: {stock_health.get('count', 0)}",
+        ])
+        items = stock_health.get("items") or []
+        if items:
+            lines.append("- low stock preview:")
+            for item in items[:5]:
+                lines.append(
+                    f"  #{item.get('id')} {item.get('name')}: {item.get('availableStock', item.get('available_stock', 0))}"
+                )
+
+    await update.message.reply_text("\n".join(lines))
+
+
+async def emoji_id_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not is_admin(user_id):
+        await update.effective_message.reply_text("❌ Bạn không có quyền truy cập!")
+        return
+
+    source_messages = [update.effective_message]
+    if update.effective_message.reply_to_message:
+        source_messages.append(update.effective_message.reply_to_message)
+
+    custom_emoji_ids: list[str] = []
+    for message in source_messages:
+        for entity in list(message.entities or []) + list(message.caption_entities or []):
+            if entity.type == MessageEntity.CUSTOM_EMOJI and entity.custom_emoji_id:
+                custom_emoji_ids.append(str(entity.custom_emoji_id))
+
+    unique_ids = list(dict.fromkeys(custom_emoji_ids))
+    if not unique_ids:
+        await update.effective_message.reply_text(
+            "Chưa thấy custom emoji nào.\n\n"
+            "Cách dùng: gửi /emojiid kèm custom emoji, hoặc reply /emojiid vào tin nhắn có custom emoji."
+        )
+        return
+
+    lines = ["Telegram custom emoji ID:"]
+    lines.extend(f"- {custom_emoji_id}" for custom_emoji_id in unique_ids)
+    lines.append("")
+    lines.append("Dán ID này vào ô Custom emoji ID trong Dashboard Products.")
+    await update.effective_message.reply_text("\n".join(lines))
+
 
 async def admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

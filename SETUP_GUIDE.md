@@ -390,14 +390,18 @@ pip install -r requirements.txt
 
 ### 5. Lỗi Database
 
-**Nguyên nhân**: File database bị lỗi
+**Nguyên nhân**: cấu hình Supabase sai, thiếu `SUPABASE_SECRET_KEY`, hoặc schema chưa apply đủ.
 
 **Giải pháp**:
 ```bash
-# Backup và xóa database cũ
-mv data/shop.db data/shop.db.backup
+# Kiểm tra env bắt buộc
+SUPABASE_URL=...
+SUPABASE_SECRET_KEY=...
 
-# Restart bot (sẽ tạo database mới)
+# Apply lại schema tổng trong Supabase SQL editor nếu thiếu bảng/RPC
+supabase_schema_all_in_one.sql
+
+# Restart bot sau khi sửa env/schema
 python run.py
 ```
 
@@ -453,9 +457,9 @@ Nếu gặp vấn đề, hãy:
 
 ## 📝 Ghi chú
 
-- Bot hỗ trợ Supabase (Postgres + Auth + Storage). SQLite vẫn có thể dùng cho local.
+- Bot dùng Supabase-only (Postgres + Auth + Storage); SQLite/local DB fallback đã bị gỡ.
 - Logs được lưu tại `bot.log`
-- Nên backup thư mục `data/` định kỳ
+- Nên backup Supabase định kỳ và giữ `supabase_schema_all_in_one.sql` đồng bộ với mọi SQL mới.
 - Khi deploy production, nên dùng Docker để dễ quản lý
 
 ---
@@ -468,7 +472,6 @@ Chạy file `supabase_schema.sql` trong Supabase SQL editor.
 ### 2) Cập nhật .env
 Thêm các biến sau (xem mẫu `.env.example`):
 ```
-USE_SUPABASE=true
 SUPABASE_URL=...
 SUPABASE_PUBLISHABLE_KEY=...
 SUPABASE_SECRET_KEY=...
@@ -481,12 +484,7 @@ SUPABASE_SECRET_KEY=...
 PAYMENT_MODE=hybrid
 ```
 
-### 3) Migrate dữ liệu từ SQLite
-```
-python scripts/migrate_sqlite_to_supabase.py
-```
-
-### 4) Tạo admin cho Dashboard
+### 3) Tạo admin cho Dashboard
 1. Tạo user trong Supabase Auth (email/password).
 2. Lấy `user_id` (UUID).
 3. Insert vào bảng `public.admin_users` với role `superadmin` hoặc `admin`.

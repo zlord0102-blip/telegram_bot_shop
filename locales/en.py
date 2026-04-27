@@ -3,7 +3,7 @@ EN = {
     "welcome": "👋 Welcome {name}!",
     "select_language": "🌐 Chọn ngôn ngữ / Select language:",
     "language_set": "✅ Switched to English.",
-    "select_product": "🛒 Choose the product you want.",
+    "select_product": "🛍 Product catalog\nChoose an item below to view price, stock, and checkout options.",
     
     # Buttons
     "btn_history": "📜 History",
@@ -53,7 +53,7 @@ EN = {
     "withdraw_low_balance": "❌ Insufficient balance!\n\n💰 Balance: {balance}đ\n⚠️ Minimum: 10,000đ",
     
     # History
-    "history_title": "📜 Purchase history\nChoose an order below to view details.",
+    "history_title": "📜 Purchase history\nChoose an order to review delivery data or buy again.",
     "history_empty": "📜 You have no orders yet!",
     "order_detail": "📋 ORDER DETAIL #{id}\n\n📦 Product: {name}\n🔢 Quantity: {qty}\n💰 Total: {price}\n📅 Date: {date}\n\n📝 Content:",
     

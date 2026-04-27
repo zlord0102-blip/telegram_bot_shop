@@ -39,7 +39,7 @@ Mặc định app chạy ở `http://localhost:3000`.
 
 ## Lưu ý tích hợp
 
-- Cần `SUPABASE_SECRET_KEY` (hoặc legacy `SUPABASE_SERVICE_ROLE_KEY`) để API route đọc/ghi bảng đang bị admin-only RLS.
+- Cần `SUPABASE_SECRET_KEY` để API route đọc/ghi bảng đang bị admin-only RLS. Không dùng legacy `SUPABASE_SERVICE_ROLE_KEY` nếu key đó đã bị lộ.
 - SePay checker ở bot sẽ tự xử lý xác nhận chuyển khoản và giao hàng sau khi đơn chuyển `confirmed`.
 - Người mua phải nhập đúng `Telegram ID` để nhận hàng tự động từ bot.
 - Nếu cần auth website riêng (không nhập Telegram ID thủ công), có thể mở rộng ở bước tiếp theo.

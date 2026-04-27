@@ -7,6 +7,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from .supabase_client import get_supabase_client
 
 
+DEFAULT_SALE_CUSTOM_EMOJI_ID = "6055192572056309981"
+
+
 def _now_iso() -> str:
     return datetime.now().isoformat()
 
@@ -50,6 +53,11 @@ def _safe_list(value: Any) -> List[Any]:
     return []
 
 
+def _safe_custom_emoji_id(value: Any) -> str:
+    text = str(value or "").strip()
+    return "".join(char for char in text if char.isdigit())[:64]
+
+
 class DirectOrderFulfillmentError(RuntimeError):
     def __init__(self, code: str, message: Optional[str] = None):
         super().__init__(message or code)
@@ -89,6 +97,12 @@ def _map_fulfillment_error_from_message(message: str, expire_minutes: int) -> Di
         return DirectOrderFulfillmentError("user_not_found")
     if "product_not_found" in lowered:
         return DirectOrderFulfillmentError("product_not_found")
+    if "sale_item_not_active" in lowered:
+        return DirectOrderFulfillmentError("sale_item_not_active")
+    if "sale_user_limit_exceeded" in lowered:
+        return DirectOrderFulfillmentError("sale_user_limit_exceeded")
+    if "sale_usdt_not_available" in lowered:
+        return DirectOrderFulfillmentError("sale_usdt_not_available")
     if "website_direct_order_not_found" in lowered:
         return DirectOrderFulfillmentError("website_direct_order_not_found")
     if "mirror_direct_order_not_found" in lowered:
@@ -181,7 +195,60 @@ def _normalize_balance_purchase_payload(data: Any) -> Dict[str, Any]:
     payload["charged_balance_usdt"] = _safe_float(payload.get("charged_balance_usdt"))
     payload["new_balance"] = _safe_int(payload.get("new_balance"))
     payload["new_balance_usdt"] = _safe_float(payload.get("new_balance_usdt"))
+    payload["sale_campaign_id"] = _safe_optional_int(payload.get("sale_campaign_id"))
+    payload["sale_item_id"] = _safe_optional_int(payload.get("sale_item_id"))
+    payload["charge_currency"] = str(payload.get("charge_currency") or "").strip().lower()
+    payload["sale_ends_at"] = payload.get("sale_ends_at")
+    payload["sale_snapshot"] = _safe_json_object(payload.get("sale_snapshot"))
     return payload
+
+
+def _normalize_sale_product_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    sale_item_id = _safe_int(row.get("sale_item_id"))
+    product_id = _safe_int(row.get("product_id"))
+    custom_emoji_id = (
+        _safe_custom_emoji_id(row.get("telegram_icon_custom_emoji_id"))
+        or DEFAULT_SALE_CUSTOM_EMOJI_ID
+    )
+    return {
+        "id": product_id,
+        "product_id": product_id,
+        "sale_item_id": sale_item_id,
+        "sale_campaign_id": _safe_int(row.get("sale_campaign_id")),
+        "is_sale": True,
+        "name": row.get("name") or f"#{product_id}",
+        "telegram_icon": row.get("telegram_icon") or "SALE",
+        "telegram_icon_custom_emoji_id": custom_emoji_id,
+        "price": _safe_int(row.get("price")),
+        "price_usdt": _safe_float(row.get("price_usdt")),
+        "original_price": _safe_int(row.get("original_price")),
+        "original_price_usdt": _safe_float(row.get("original_price_usdt")),
+        "discount_percent": _safe_float(row.get("discount_percent")),
+        "price_tiers": _safe_list(row.get("price_tiers")),
+        "promo_buy_quantity": _safe_int(row.get("promo_buy_quantity")),
+        "promo_bonus_quantity": _safe_int(row.get("promo_bonus_quantity")),
+        "description": row.get("description") or "",
+        "format_data": row.get("format_data") or "",
+        "sort_position": _safe_optional_int(row.get("sort_position")),
+        "stock": _safe_int(row.get("stock")),
+        "campaign_name": row.get("campaign_name") or "",
+        "starts_at": row.get("starts_at"),
+        "ends_at": row.get("ends_at"),
+        "per_user_limit": _safe_optional_int(row.get("per_user_limit")),
+        "quantity_limit": _safe_optional_int(row.get("quantity_limit")),
+        "sold_quantity": _safe_int(row.get("sold_quantity")),
+    }
+
+
+def _sale_product_sort_key(product: Dict[str, Any]):
+    sort_position = _safe_optional_int(product.get("sort_position"))
+    sale_item_id = _safe_optional_int(product.get("sale_item_id"))
+    id_fallback = sale_item_id if sale_item_id is not None else 10**12
+    return (
+        1 if sort_position is None else 0,
+        sort_position if sort_position is not None else 10**11,
+        id_fallback,
+    )
 
 
 def _parse_created_at(value: Any) -> Optional[datetime]:
@@ -518,6 +585,8 @@ async def get_products():
             products.append({
                 "id": product_id,
                 "name": row.get("name"),
+                "telegram_icon": row.get("telegram_icon") or "",
+                "telegram_icon_custom_emoji_id": row.get("telegram_icon_custom_emoji_id") or "",
                 "price": _safe_int(row.get("price")),
                 "description": row.get("description"),
                 "stock": _safe_int(row.get("stock")),
@@ -535,12 +604,17 @@ async def get_products():
         def _fetch():
             try:
                 return _get_table("products").select(
-                    "id, name, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id"
+                    "id, name, telegram_icon, telegram_icon_custom_emoji_id, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id"
                 ).eq("is_deleted", False).eq("is_hidden", False).order("id").execute()
             except Exception:
-                return _get_table("products").select(
-                    "id, name, price, description, price_usdt, format_data"
-                ).order("id").execute()
+                try:
+                    return _get_table("products").select(
+                        "id, name, telegram_icon, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id"
+                    ).eq("is_deleted", False).eq("is_hidden", False).order("id").execute()
+                except Exception:
+                    return _get_table("products").select(
+                        "id, name, price, description, price_usdt, format_data"
+                    ).order("id").execute()
 
         resp = await _to_thread(_fetch)
         rows = resp.data or []
@@ -556,6 +630,8 @@ async def get_products():
             products.append({
                 "id": product_id,
                 "name": row.get("name"),
+                "telegram_icon": row.get("telegram_icon") or "",
+                "telegram_icon_custom_emoji_id": row.get("telegram_icon_custom_emoji_id") or "",
                 "price": _safe_int(row.get("price")),
                 "description": row.get("description"),
                 "stock": stock_count,
@@ -568,6 +644,126 @@ async def get_products():
                 "bot_folder_id": _safe_optional_int(row.get("bot_folder_id")),
             })
         return _sort_products_by_position(products)
+
+
+async def search_products(query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    terms = [term for term in str(query or "").strip().lower().split() if term]
+    if not terms:
+        return []
+
+    products = await get_products()
+    matches: List[Tuple[int, Dict[str, Any]]] = []
+    for product in products:
+        name = str(product.get("name") or "").lower()
+        description = str(product.get("description") or "").lower()
+        haystack = f"{name} {description}"
+        if not all(term in haystack for term in terms):
+            continue
+        score = 0
+        if name.startswith(terms[0]):
+            score += 30
+        score += sum(10 for term in terms if term in name)
+        score += min(_safe_int(product.get("stock")), 20)
+        matches.append((score, product))
+
+    matches.sort(key=lambda item: (-item[0], _product_sort_key(item[1])))
+    safe_limit = max(1, min(int(limit or 10), 20))
+    return [product for _, product in matches[:safe_limit]]
+
+
+async def get_low_stock_products(threshold: int = 5, limit: int = 10) -> List[Dict[str, Any]]:
+    safe_threshold = max(0, int(threshold or 0))
+    safe_limit = max(1, min(int(limit or 10), 50))
+    products = await get_products()
+    low_stock = [
+        product for product in products
+        if _safe_int(product.get("stock")) <= safe_threshold
+    ]
+    low_stock.sort(key=lambda product: (_safe_int(product.get("stock")), _product_sort_key(product)))
+    return low_stock[:safe_limit]
+
+
+async def get_delivery_outbox_stats() -> Dict[str, Any]:
+    stats = {
+        "available": False,
+        "pending": 0,
+        "sending": 0,
+        "sent": 0,
+        "failed": 0,
+        "retry_due": 0,
+    }
+
+    def _fetch():
+        return _get_table("bot_delivery_outbox").select("status, next_retry_at").limit(1000).execute()
+
+    try:
+        resp = await _to_thread(_fetch)
+    except Exception as exc:
+        if _is_missing_relation_error_message(str(exc)) and "bot_delivery_outbox" in str(exc):
+            return stats
+        return {**stats, "error": str(exc)[:160]}
+
+    now_dt = datetime.now(timezone.utc)
+    stats["available"] = True
+    for row in resp.data or []:
+        status = str(row.get("status") or "").strip().lower()
+        if status in ("pending", "sending", "sent", "failed"):
+            stats[status] = int(stats.get(status, 0)) + 1
+        retry_at = _parse_created_at(row.get("next_retry_at"))
+        if status == "pending" and retry_at:
+            retry_at_utc = retry_at.astimezone(timezone.utc) if retry_at.tzinfo else retry_at.replace(tzinfo=timezone.utc)
+            if retry_at_utc <= now_dt:
+                stats["retry_due"] += 1
+    return stats
+
+
+async def get_admin_ops_health_snapshot(low_stock_threshold: int = 5) -> Dict[str, Any]:
+    threshold = max(0, int(low_stock_threshold or 0))
+
+    def _rpc():
+        return get_supabase_client().rpc(
+            "admin_ops_health_snapshot",
+            {"p_low_stock_threshold": threshold},
+        ).execute()
+
+    try:
+        resp = await _to_thread(_rpc)
+        payload = resp.data
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+
+    outbox = await get_delivery_outbox_stats()
+    low_stock = await get_low_stock_products(threshold=threshold, limit=12)
+    pending_deposits = await get_pending_deposits()
+    pending_withdrawals = await get_pending_withdrawals()
+    pending_usdt = await get_pending_usdt_withdrawals()
+    pending_direct = await get_pending_direct_orders()
+    pending_binance = await get_pending_binance_direct_orders()
+
+    return {
+        "checkedAt": _now_iso(),
+        "queues": {
+            "pendingDeposits": len(pending_deposits),
+            "pendingWithdrawals": len(pending_withdrawals),
+            "pendingUsdtWithdrawals": len(pending_usdt),
+            "pendingDirectOrders": len(pending_direct) + len(pending_binance),
+            "deliveryOutbox": outbox,
+        },
+        "stock": {
+            "threshold": threshold,
+            "count": len(low_stock),
+            "items": [
+                {
+                    "id": product.get("id"),
+                    "name": product.get("name"),
+                    "availableStock": _safe_int(product.get("stock")),
+                }
+                for product in low_stock
+            ],
+        },
+    }
 
 
 async def get_bot_product_folders():
@@ -602,6 +798,8 @@ async def get_product(product_id: int):
         return {
             "id": row.get("id"),
             "name": row.get("name"),
+            "telegram_icon": row.get("telegram_icon") or "",
+            "telegram_icon_custom_emoji_id": row.get("telegram_icon_custom_emoji_id") or "",
             "price": _safe_int(row.get("price")),
             "description": row.get("description"),
             "stock": _safe_int(row.get("stock")),
@@ -617,7 +815,7 @@ async def get_product(product_id: int):
         def _fetch():
             try:
                 return _get_table("products").select(
-                    "id, name, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id"
+                    "id, name, telegram_icon, telegram_icon_custom_emoji_id, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id"
                 ).eq(
                     "id", product_id
                 ).eq(
@@ -626,9 +824,20 @@ async def get_product(product_id: int):
                     "is_hidden", False
                 ).limit(1).execute()
             except Exception:
-                return _get_table("products").select(
-                    "id, name, price, description, price_usdt, format_data"
-                ).eq("id", product_id).limit(1).execute()
+                try:
+                    return _get_table("products").select(
+                        "id, name, telegram_icon, price, description, price_usdt, format_data, price_tiers, promo_buy_quantity, promo_bonus_quantity, sort_position, bot_folder_id"
+                    ).eq(
+                        "id", product_id
+                    ).eq(
+                        "is_deleted", False
+                    ).eq(
+                        "is_hidden", False
+                    ).limit(1).execute()
+                except Exception:
+                    return _get_table("products").select(
+                        "id, name, price, description, price_usdt, format_data"
+                    ).eq("id", product_id).limit(1).execute()
 
         resp = await _to_thread(_fetch)
         data = resp.data or []
@@ -644,6 +853,8 @@ async def get_product(product_id: int):
         return {
             "id": row.get("id"),
             "name": row.get("name"),
+            "telegram_icon": row.get("telegram_icon") or "",
+            "telegram_icon_custom_emoji_id": row.get("telegram_icon_custom_emoji_id") or "",
             "price": _safe_int(row.get("price")),
             "description": row.get("description"),
             "stock": stock_count,
@@ -657,6 +868,53 @@ async def get_product(product_id: int):
         }
 
 
+async def get_active_sale_products() -> List[Dict[str, Any]]:
+    def _rpc():
+        return get_supabase_client().rpc("get_active_sale_products").execute()
+
+    try:
+        resp = await _to_thread(_rpc)
+    except Exception as exc:
+        if _is_missing_rpc_error_message(str(exc)):
+            return []
+        raise
+
+    products = [
+        _normalize_sale_product_row(row)
+        for row in (resp.data or [])
+        if isinstance(row, dict)
+    ]
+    products.sort(key=_sale_product_sort_key)
+    return products
+
+
+async def get_active_sale_product(sale_item_id: int) -> Optional[Dict[str, Any]]:
+    safe_sale_item_id = int(sale_item_id or 0)
+    if safe_sale_item_id <= 0:
+        return None
+
+    def _rpc():
+        return get_supabase_client().rpc(
+            "get_active_sale_product",
+            {"p_sale_item_id": safe_sale_item_id},
+        ).execute()
+
+    try:
+        resp = await _to_thread(_rpc)
+        rows = resp.data or []
+        row = rows[0] if isinstance(rows, list) and rows else rows
+        if isinstance(row, dict) and row:
+            return _normalize_sale_product_row(row)
+    except Exception as exc:
+        if not _is_missing_rpc_error_message(str(exc)):
+            raise
+
+    for product in await get_active_sale_products():
+        if _safe_int(product.get("sale_item_id")) == safe_sale_item_id:
+            return product
+    return None
+
+
 async def add_product(
     name: str,
     price: int,
@@ -668,6 +926,8 @@ async def add_product(
     promo_bonus_quantity: int = 0,
     sort_position: Optional[int] = None,
     bot_folder_id: Optional[int] = None,
+    telegram_icon: str = "",
+    telegram_icon_custom_emoji_id: str = "",
 ):
     shifted_rows: list[tuple[int, int]] = []
 
@@ -696,6 +956,8 @@ async def add_product(
     def _insert():
         payload = {
             "name": name,
+            "telegram_icon": str(telegram_icon or "").strip()[:16] or None,
+            "telegram_icon_custom_emoji_id": _safe_custom_emoji_id(telegram_icon_custom_emoji_id) or None,
             "price": price,
             "description": description,
             "price_usdt": price_usdt,
@@ -1015,6 +1277,36 @@ async def fulfill_bot_balance_purchase(
     }
 
 
+async def fulfill_bot_sale_balance_purchase(
+    user_id: int,
+    sale_item_id: int,
+    quantity: int,
+    charge_currency: str = "vnd",
+    order_group: Optional[str] = None,
+) -> Dict[str, Any]:
+    def _rpc():
+        return get_supabase_client().rpc(
+            "fulfill_bot_sale_balance_purchase",
+            {
+                "p_user_id": user_id,
+                "p_sale_item_id": int(sale_item_id),
+                "p_quantity": max(1, int(quantity or 0)),
+                "p_charge_currency": str(charge_currency or "vnd").strip().lower(),
+                "p_order_group": (order_group or "").strip() or None,
+            },
+        ).execute()
+
+    try:
+        resp = await _to_thread(_rpc)
+        payload = _normalize_balance_purchase_payload(getattr(resp, "data", None))
+        if payload:
+            return payload
+    except Exception as exc:
+        raise _map_fulfillment_error_from_message(str(exc), 10) from exc
+
+    raise DirectOrderFulfillmentError("sale_item_not_active")
+
+
 async def _get_product_names(product_ids: List[int]) -> Dict[int, str]:
     if not product_ids:
         return {}
@@ -1052,7 +1344,7 @@ async def get_user_orders(user_id: int):
 async def get_order_detail(order_id: int):
     def _fetch():
         return _get_table("orders").select(
-            "id, product_id, content, price, created_at, quantity, products(name, description, format_data)"
+            "id, user_id, product_id, content, price, created_at, quantity, products(name, description, format_data)"
         ).eq("id", order_id).limit(1).execute()
 
     resp = await _to_thread(_fetch)
@@ -1063,6 +1355,8 @@ async def get_order_detail(order_id: int):
     product = row.get("products") or {}
     return (
         row.get("id"),
+        row.get("user_id"),
+        row.get("product_id"),
         product.get("name"),
         row.get("content"),
         _safe_int(row.get("price")),
@@ -1218,6 +1512,52 @@ async def create_direct_order_with_settings(
     return await get_bank_settings()
 
 
+async def create_sale_direct_order_with_settings(
+    user_id: int,
+    sale_item_id: int,
+    quantity: int,
+    code: str,
+    hold_minutes: int = 10,
+) -> Dict[str, Any]:
+    def _rpc():
+        return get_supabase_client().rpc(
+            "create_sale_direct_order_and_get_bank_settings",
+            {
+                "p_user_id": user_id,
+                "p_sale_item_id": int(sale_item_id),
+                "p_quantity": max(1, int(quantity or 0)),
+                "p_code": code,
+                "p_hold_minutes": max(1, int(hold_minutes or 10)),
+            },
+        ).execute()
+
+    try:
+        resp = await _to_thread(_rpc)
+        row = _normalize_rpc_payload(getattr(resp, "data", None))
+        if row:
+            return {
+                "direct_order_id": _safe_int(row.get("direct_order_id")),
+                "product_id": _safe_int(row.get("product_id")),
+                "product_name": row.get("product_name") or "",
+                "bank_name": row.get("bank_name") or "",
+                "account_number": row.get("account_number") or "",
+                "account_name": row.get("account_name") or "",
+                "sepay_token": "",
+                "quantity": _safe_int(row.get("quantity"), 1),
+                "bonus_quantity": _safe_int(row.get("bonus_quantity"), 0),
+                "unit_price": _safe_int(row.get("unit_price")),
+                "amount": _safe_int(row.get("amount")),
+                "code": row.get("code") or code,
+                "sale_campaign_id": _safe_int(row.get("sale_campaign_id")),
+                "sale_item_id": _safe_int(row.get("sale_item_id")),
+                "held_until": row.get("held_until"),
+            }
+    except Exception as exc:
+        raise _map_fulfillment_error_from_message(str(exc), hold_minutes) from exc
+
+    raise DirectOrderFulfillmentError("sale_direct_order_failed")
+
+
 async def create_direct_order(
     user_id: int,
     product_id: int,
@@ -1282,6 +1622,38 @@ async def get_pending_direct_orders():
         )
         for row in rows
     ]
+
+async def get_user_direct_order_by_code(user_id: int, code: str):
+    def _fetch():
+        try:
+            return _get_table("direct_orders").select(
+                "id, user_id, product_id, quantity, bonus_quantity, unit_price, amount, code, status, created_at, payment_channel, external_payment_id, external_paid_at"
+            ).eq("user_id", user_id).eq("code", code).order("id", desc=True).limit(1).execute()
+        except Exception:
+            return _get_table("direct_orders").select(
+                "id, user_id, product_id, quantity, unit_price, amount, code, status, created_at"
+            ).eq("user_id", user_id).eq("code", code).order("id", desc=True).limit(1).execute()
+
+    resp = await _to_thread(_fetch)
+    rows = resp.data or []
+    if not rows:
+        return None
+    row = rows[0]
+    return {
+        "id": _safe_int(row.get("id")),
+        "user_id": _safe_int(row.get("user_id")),
+        "product_id": _safe_int(row.get("product_id")),
+        "quantity": _safe_int(row.get("quantity"), 1),
+        "bonus_quantity": _safe_int(row.get("bonus_quantity"), 0),
+        "unit_price": _safe_int(row.get("unit_price")),
+        "amount": _safe_int(row.get("amount")),
+        "code": row.get("code"),
+        "status": str(row.get("status") or "pending"),
+        "created_at": row.get("created_at"),
+        "payment_channel": row.get("payment_channel") or "vietqr",
+        "external_payment_id": row.get("external_payment_id"),
+        "external_paid_at": row.get("external_paid_at"),
+    }
 
 
 async def set_direct_order_status(order_id: int, status: str):
@@ -2238,6 +2610,70 @@ async def create_binance_direct_order(
         "payment_address_tag": row.get("payment_address_tag") or payment_address_tag,
         "created_at": row.get("created_at") or _now_iso(),
     }
+
+
+async def create_binance_sale_direct_order(
+    user_id: int,
+    sale_item_id: int,
+    quantity: int,
+    code: str,
+    *,
+    payment_asset: str,
+    payment_network: str,
+    payment_amount_asset: str,
+    payment_rate_vnd: str,
+    payment_address: str,
+    payment_address_tag: str = "",
+    hold_minutes: int = 10,
+) -> Dict[str, Any]:
+    def _rpc():
+        return get_supabase_client().rpc(
+            "create_binance_sale_direct_order",
+            {
+                "p_user_id": user_id,
+                "p_sale_item_id": int(sale_item_id),
+                "p_quantity": max(1, int(quantity or 0)),
+                "p_code": code,
+                "p_payment_asset": payment_asset,
+                "p_payment_network": payment_network,
+                "p_payment_amount_asset": payment_amount_asset,
+                "p_payment_rate_vnd": payment_rate_vnd,
+                "p_payment_address": payment_address,
+                "p_payment_address_tag": payment_address_tag,
+                "p_hold_minutes": max(1, int(hold_minutes or 10)),
+            },
+        ).execute()
+
+    try:
+        resp = await _to_thread(_rpc)
+        row = _normalize_rpc_payload(getattr(resp, "data", None))
+        if row:
+            return {
+                "direct_order_id": _safe_int(row.get("direct_order_id")),
+                "code": row.get("code") or code,
+                "payment_asset": row.get("payment_asset") or payment_asset,
+                "payment_network": row.get("payment_network") or payment_network,
+                "payment_amount_asset": row.get("payment_amount_asset") or payment_amount_asset,
+                "payment_address": row.get("payment_address") or payment_address,
+                "payment_address_tag": row.get("payment_address_tag") or payment_address_tag,
+                "created_at": row.get("created_at") or _now_iso(),
+                "product_id": _safe_int(row.get("product_id")),
+                "product_name": row.get("product_name") or "",
+                "quantity": _safe_int(row.get("quantity"), 1),
+                "bonus_quantity": _safe_int(row.get("bonus_quantity"), 0),
+                "unit_price": _safe_int(row.get("unit_price")),
+                "amount": _safe_int(row.get("amount")),
+                "sale_campaign_id": _safe_int(row.get("sale_campaign_id")),
+                "sale_item_id": _safe_int(row.get("sale_item_id")),
+                "held_until": row.get("held_until"),
+            }
+    except Exception as exc:
+        message = str(exc)
+        if "sale_" in message or "not_enough_stock" in message or "insufficient" in message:
+            raise _map_fulfillment_error_from_message(message, hold_minutes) from exc
+        raise _map_binance_order_error_from_message(message) from exc
+
+    raise BinanceDirectOrderError("binance_direct_order_failed")
 
 
 async def get_pending_binance_direct_orders():

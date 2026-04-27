@@ -3,7 +3,7 @@ VI = {
     "welcome": "👋 Chào {name}!",
     "select_language": "🌐 Chọn ngôn ngữ / Select language:",
     "language_set": "✅ Đã chuyển sang Tiếng Việt.",
-    "select_product": "🛒 Chọn sản phẩm bạn muốn mua.",
+    "select_product": "🛍 Danh sách sản phẩm\nChọn một mục bên dưới để xem giá, tồn kho và thanh toán.",
     
     # Buttons
     "btn_history": "📜 Lịch sử mua",
@@ -54,7 +54,7 @@ VI = {
     "withdraw_low_balance": "❌ Số dư không đủ để rút!\n\n💰 Số dư: {balance}đ\n⚠️ Tối thiểu: 10,000đ",
     
     # History
-    "history_title": "📜 Lịch sử mua\nChọn một đơn bên dưới để xem chi tiết.",
+    "history_title": "📜 Lịch sử mua\nChọn một đơn để xem lại dữ liệu hoặc mua lại.",
     "history_empty": "📜 Bạn chưa có đơn hàng nào!",
     "order_detail": "📋 CHI TIẾT ĐƠN HÀNG #{id}\n\n📦 Sản phẩm: {name}\n🔢 Số lượng: {qty}\n💰 Tổng tiền: {price}\n📅 Ngày mua: {date}\n\n📝 Nội dung:",
     

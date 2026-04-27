@@ -84,7 +84,7 @@ python webhook.py      # Chỉ webhook server
 │   ├── shop.py         # Mua hàng, nạp/rút tiền
 │   └── admin.py        # Admin panel
 ├── database/
-│   └── db.py           # SQLite database
+│   └── supabase_db.py  # Supabase database
 └── keyboards/
     └── inline.py       # Keyboards
 ```

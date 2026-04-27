@@ -19,8 +19,36 @@ from helpers.purchase_messages import (
     build_purchase_summary_text,
 )
 from telegram.error import BadRequest, Forbidden, NetworkError, RetryAfter, TelegramError, TimedOut
+from database import (
+    build_bot_delivery_payload_for_direct_order,
+    ensure_bot_delivery_outbox,
+    get_setting,
+    get_due_bot_delivery_outbox,
+    set_setting,
+    get_pending_deposits,
+    update_balance,
+    get_balance,
+    is_processed_transaction,
+    mark_processed_transaction,
+    set_deposit_status,
+    get_pending_direct_orders,
+    set_direct_order_status,
+    fulfill_bot_direct_order,
+    fulfill_website_direct_order,
+    DirectOrderFulfillmentError,
+    get_pending_binance_direct_orders,
+    record_direct_order_external_payment,
+    is_processed_binance_deposit,
+    mark_processed_binance_deposit,
+    get_pending_website_direct_orders,
+    set_website_direct_order_status,
+    mark_bot_delivery_outbox_failed,
+    mark_bot_delivery_outbox_sending,
+    mark_bot_delivery_outbox_sent,
+    schedule_bot_delivery_outbox_retry,
+    get_recent_confirmed_direct_orders_missing_delivery,
+)
 
-USE_SUPABASE = os.getenv("USE_SUPABASE", "true").lower() in ("1", "true", "yes") and os.getenv("SUPABASE_URL")
 SEPAY_DEBUG = os.getenv("SEPAY_DEBUG", "").lower() in ("1", "true", "yes")
 SEPAY_LIMIT = os.getenv("SEPAY_LIMIT", "").strip()
 SEPAY_FROM_DATE = os.getenv("SEPAY_FROM_DATE", "").strip()
@@ -50,59 +78,6 @@ BOT_DELIVERY_RETRY_BASE_SECONDS = _env_positive_int("BOT_DELIVERY_RETRY_BASE_SEC
 BOT_DELIVERY_RETRY_MAX_SECONDS = _env_positive_int("BOT_DELIVERY_RETRY_MAX_SECONDS", 30 * 60)
 BOT_DELIVERY_RETRY_BATCH_LIMIT = _env_positive_int("BOT_DELIVERY_RETRY_BATCH_LIMIT", 20)
 logger = logging.getLogger(__name__)
-
-if USE_SUPABASE:
-    from database import (
-        build_bot_delivery_payload_for_direct_order,
-        ensure_bot_delivery_outbox,
-        get_setting,
-        get_due_bot_delivery_outbox,
-        set_setting,
-        get_pending_deposits,
-        update_balance,
-        get_balance,
-        is_processed_transaction,
-        mark_processed_transaction,
-        set_deposit_status,
-        get_pending_direct_orders,
-        set_direct_order_status,
-        fulfill_bot_direct_order,
-        fulfill_website_direct_order,
-        DirectOrderFulfillmentError,
-        get_pending_binance_direct_orders,
-        record_direct_order_external_payment,
-        is_processed_binance_deposit,
-        mark_processed_binance_deposit,
-        get_pending_website_direct_orders,
-        set_website_direct_order_status,
-        mark_bot_delivery_outbox_failed,
-        mark_bot_delivery_outbox_sending,
-        mark_bot_delivery_outbox_sent,
-        schedule_bot_delivery_outbox_retry,
-        get_recent_confirmed_direct_orders_missing_delivery,
-    )
-else:
-    import aiosqlite
-    from database import (
-        build_bot_delivery_payload_for_direct_order,
-        ensure_bot_delivery_outbox,
-        fulfill_bot_direct_order,
-        get_setting,
-        get_due_bot_delivery_outbox,
-        get_pending_binance_direct_orders,
-        is_processed_binance_deposit,
-        mark_processed_binance_deposit,
-        mark_bot_delivery_outbox_failed,
-        mark_bot_delivery_outbox_sending,
-        mark_bot_delivery_outbox_sent,
-        record_direct_order_external_payment,
-        schedule_bot_delivery_outbox_retry,
-        set_setting,
-        set_direct_order_status,
-        get_recent_confirmed_direct_orders_missing_delivery,
-    )
-
-DB_PATH = "data/shop.db"
 _SEPAY_TOKEN_WARNED = False
 _SEPAY_TOKEN_OK = False
 
@@ -129,20 +104,9 @@ def _parse_chat_id(raw_value):
 
 
 async def get_payment_relay_target():
-    if USE_SUPABASE:
-        token = str(await get_setting(PAYMENT_RELAY_NOTIFY_TOKEN_KEY, "") or "").strip()
-        chat_id = _parse_chat_id(await get_setting(PAYMENT_RELAY_NOTIFY_USER_ID_KEY, ""))
-        return token, chat_id
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (PAYMENT_RELAY_NOTIFY_TOKEN_KEY,))
-        token_row = await cursor.fetchone()
-        token = str(token_row[0] if token_row else "").strip()
-
-        cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (PAYMENT_RELAY_NOTIFY_USER_ID_KEY,))
-        chat_row = await cursor.fetchone()
-        chat_id = _parse_chat_id(chat_row[0] if chat_row else "")
-        return token, chat_id
+    token = str(await get_setting(PAYMENT_RELAY_NOTIFY_TOKEN_KEY, "") or "").strip()
+    chat_id = _parse_chat_id(await get_setting(PAYMENT_RELAY_NOTIFY_USER_ID_KEY, ""))
+    return token, chat_id
 
 
 async def send_payment_relay_notification(relay_token: str, relay_chat_id: int | None, text: str):
@@ -332,27 +296,12 @@ async def _save_last_seen_tx_id(tx_id: str):
 
 
 async def _load_setting_value(key: str) -> str:
-    if USE_SUPABASE:
-        return str(await get_setting(key, "") or "").strip()
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT value FROM settings WHERE key = ?", (key,))
-        row = await cursor.fetchone()
-        return str(row[0] if row else "").strip()
+    return str(await get_setting(key, "") or "").strip()
 
 
 async def _save_setting_value(key: str, value: str):
     text = str(value or "").strip()
-    if USE_SUPABASE:
-        await set_setting(key, text)
-        return
-
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute(
-            "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-            (key, text),
-        )
-        await db.commit()
+    await set_setting(key, text)
 
 
 async def _load_checker_health_state() -> dict:
@@ -376,20 +325,15 @@ async def _save_checker_health_state(state: dict):
         "intervalSeconds": max(1, int(state.get("intervalSeconds") or 30)),
         "sleepSeconds": max(1, int(state.get("sleepSeconds") or 30)),
         "lastDurationMs": max(0, int(state.get("lastDurationMs") or 0)),
-        "runtime": "supabase" if state.get("useSupabase") else "sqlite",
+        "runtime": "supabase",
     }
     await _save_setting_value(CHECKER_HEALTH_KEY, json.dumps(payload, ensure_ascii=False))
 
 
 async def get_sepay_token():
     """Lấy SePay token từ database"""
-    if USE_SUPABASE:
-        token = await get_setting("sepay_token", "")
-        return token or SEPAY_API_TOKEN
-    async with aiosqlite.connect(DB_PATH) as db:
-        cursor = await db.execute("SELECT value FROM settings WHERE key = 'sepay_token'")
-        row = await cursor.fetchone()
-        return (row[0] if row else "") or SEPAY_API_TOKEN
+    token = await get_setting("sepay_token", "")
+    return token or SEPAY_API_TOKEN
 
 async def get_recent_transactions():
     """Lấy giao dịch gần đây từ SePay"""
@@ -1112,7 +1056,7 @@ async def process_transactions(bot_app=None):
         latest_seen_tx_id = _pick_newer_tx_id(latest_seen_tx_id, _pick_tx_id(tx))
 
     relay_token, relay_chat_id = await get_payment_relay_target()
-    if USE_SUPABASE:
+    if True:
         pending_deposits = await get_pending_deposits()
         pending_direct_orders = await get_pending_direct_orders()
         pending_website_direct_orders = await get_pending_website_direct_orders()
@@ -1293,124 +1237,14 @@ async def process_transactions(bot_app=None):
         await _process_due_bot_delivery_outbox(bot_app)
         return
 
-    async with aiosqlite.connect(DB_PATH) as db:
-        # Auto-cancel stale direct orders in sqlite mode as well.
-        cursor = await db.execute(
-            "SELECT id, user_id, created_at FROM direct_orders WHERE status = 'pending'"
-        )
-        sqlite_pending_direct_orders = await cursor.fetchall()
-        for order_id, user_id, created_at in sqlite_pending_direct_orders:
-            if not _is_direct_order_expired(created_at):
-                continue
-            await db.execute(
-                "UPDATE direct_orders SET status = 'cancelled' WHERE id = ?",
-                (order_id,)
-            )
-            logger.info("⏱️ Auto-cancel direct order #%s after %sm pending. (sqlite)", order_id, DIRECT_ORDER_PENDING_EXPIRE_MINUTES)
-            if bot_app:
-                try:
-                    await bot_app.bot.send_message(
-                        user_id,
-                        f"⌛ Đơn thanh toán #{order_id} đã hết hạn sau {DIRECT_ORDER_PENDING_EXPIRE_MINUTES} phút và đã tự hủy."
-                    )
-                except Exception:
-                    pass
-        await db.commit()
-
-        # Lấy pending deposits
-        cursor = await db.execute(
-            "SELECT id, user_id, amount, code FROM deposits WHERE status = 'pending'"
-        )
-        pending_deposits = await cursor.fetchall()
-
-        for tx in transactions:
-            # Lấy thông tin giao dịch (API trả về amount_in cho tiền vào)
-            amount_in = _pick_amount(tx)
-            if float(amount_in) <= 0:
-                continue
-
-            content = _pick_content(tx)
-            content_upper = str(content).upper().strip()
-            content_norm = _normalize_content(content)
-            amount = int(float(amount_in))
-            tx_id = _pick_tx_id(tx)
-
-            # Kiểm tra đã xử lý chưa
-            if not tx_id:
-                continue
-            if not _is_tx_newer_than_checkpoint(tx_id, last_seen_tx_id):
-                continue
-            _log_tx_seen(tx_id, amount, content)
-            cursor = await db.execute(
-                "SELECT 1 FROM processed_transactions WHERE tx_id = ?", (tx_id,)
-            )
-            if await cursor.fetchone():
-                continue
-
-            # Tìm deposit khớp
-            for deposit in pending_deposits:
-                deposit_id, user_id, expected_amount, code = deposit
-
-                code_upper = code.upper()
-                code_norm = _normalize_content(code)
-                if code_upper in content_upper or code_norm in content_norm:
-                    # Cộng tiền
-                    await db.execute(
-                        "UPDATE deposits SET status = 'confirmed' WHERE id = ?",
-                        (deposit_id,)
-                    )
-                    await db.execute(
-                        "UPDATE users SET balance = balance + ? WHERE user_id = ?",
-                        (amount, user_id)
-                    )
-                    # Đánh dấu đã xử lý
-                    await db.execute(
-                        "INSERT INTO processed_transactions (tx_id) VALUES (?)",
-                        (tx_id,)
-                    )
-                    await db.commit()
-
-                    print(f"✅ Confirmed: User {user_id}, Amount {amount:,}đ")
-
-                    # Thông báo user
-                    if bot_app:
-                        try:
-                            # Lấy số dư mới
-                            cursor = await db.execute(
-                                "SELECT balance FROM users WHERE user_id = ?", (user_id,)
-                            )
-                            new_balance = (await cursor.fetchone())[0]
-
-                            await bot_app.bot.send_message(
-                                user_id,
-                                f"✅ NẠP TIỀN THÀNH CÔNG!\n\n"
-                                f"💰 Số tiền: {amount:,}đ\n"
-                                f"💳 Số dư hiện tại: {new_balance:,}đ"
-                            )
-                        except:
-                            pass
-                    break
-        if latest_seen_tx_id and latest_seen_tx_id != last_seen_tx_id:
-            await _save_last_seen_tx_id(latest_seen_tx_id)
-    await _process_binance_direct_orders(bot_app, relay_token, relay_chat_id)
-
 async def init_checker_db():
-    """Tạo bảng lưu giao dịch đã xử lý"""
-    if USE_SUPABASE:
-        return
-    async with aiosqlite.connect(DB_PATH) as db:
-        await db.execute("""
-            CREATE TABLE IF NOT EXISTS processed_transactions (
-                tx_id TEXT PRIMARY KEY,
-                processed_at TEXT DEFAULT CURRENT_TIMESTAMP
-            )
-        """)
-        await db.commit()
+    """Compatibility no-op; checker state is stored in Supabase."""
+    return
 
 async def run_checker(bot_app=None, interval=30):
     """Chạy checker định kỳ"""
     await init_checker_db()
-    logger.info("🔄 SePay checker started (interval: %ss, supabase=%s)", interval, USE_SUPABASE)
+    logger.info("🔄 SePay checker started (interval: %ss, runtime=supabase)", interval)
     last_mode = None
     health_state = await _load_checker_health_state()
     health_state.update(
@@ -1419,7 +1253,7 @@ async def run_checker(bot_app=None, interval=30):
             "mode": "normal",
             "intervalSeconds": max(1, int(interval or 30)),
             "sleepSeconds": max(1, int(interval or 30)),
-            "useSupabase": bool(USE_SUPABASE),
+            "useSupabase": True,
         }
     )
     try:
@@ -1453,7 +1287,7 @@ async def run_checker(bot_app=None, interval=30):
                 "intervalSeconds": max(1, int(interval or 30)),
                 "sleepSeconds": max(1, int(sleep_seconds or 1)),
                 "lastDurationMs": duration_ms,
-                "useSupabase": bool(USE_SUPABASE),
+                "useSupabase": True,
                 "lastError": error_message[:500] if error_message else None,
             }
         )

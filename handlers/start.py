@@ -177,6 +177,57 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     set_last_menu_message(context, menu_msg)
 
+
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show a compact command guide that also restores the reply keyboard."""
+    user_id = update.effective_user.id
+    lang = await get_user_language(user_id)
+    if lang == "en":
+        text = (
+            "🧭 Help\n\n"
+            "/shop - open the product catalog\n"
+            "/search <keyword> - find products quickly\n"
+            "/balance - view your VND/USDT balance\n"
+            "/deposit - create a top-up transfer\n"
+            "/history - view purchased orders\n"
+            "/support - contact support\n"
+            "/settings - change language\n\n"
+            "Tip: after creating a transfer order, use the Check status button on that order message."
+        )
+    else:
+        text = (
+            "🧭 Trợ giúp\n\n"
+            "/shop - mở danh mục sản phẩm\n"
+            "/search <từ khóa> - tìm sản phẩm nhanh\n"
+            "/balance - xem số dư VNĐ/USDT\n"
+            "/deposit - tạo lệnh nạp tiền\n"
+            "/history - xem đơn đã mua\n"
+            "/support - liên hệ hỗ trợ\n"
+            "/settings - đổi ngôn ngữ\n\n"
+            "Mẹo: sau khi tạo đơn chuyển khoản, dùng nút Kiểm tra trạng thái trên tin nhắn đơn đó."
+        )
+    await update.message.reply_text(text, reply_markup=await get_user_keyboard(lang))
+
+
+async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show user-facing settings shortcuts."""
+    user_id = update.effective_user.id
+    lang = await get_user_language(user_id)
+    keyboard = [
+        [InlineKeyboardButton("🇻🇳 Tiếng Việt", callback_data="set_lang_vi")],
+        [InlineKeyboardButton("🇬🇧 English", callback_data="set_lang_en")],
+    ]
+    text = (
+        f"⚙️ Cài đặt\n\n🆔 User ID: `{user_id}`\n\nChọn ngôn ngữ bạn muốn dùng:"
+        if lang != "en"
+        else f"⚙️ Settings\n\n🆔 User ID: `{user_id}`\n\nChoose your language:"
+    )
+    await update.message.reply_text(
+        text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
 async def handle_change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hiện menu đổi ngôn ngữ"""
     if not await is_feature_enabled("show_language"):
@@ -315,6 +366,39 @@ async def handle_support_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     if pressed_legacy_icon:
         refresh_text = "✅ Đã cập nhật icon Hỗ trợ mới." if lang != "en" else "✅ Support icon updated."
         await update.message.reply_text(refresh_text, reply_markup=await get_user_keyboard(lang))
+
+
+async def handle_support_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+    lang = await get_user_language(user_id)
+    if not await is_feature_enabled("show_support"):
+        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.")
+        return
+
+    contact = _normalize_admin_contact(await get_setting("admin_contact", ""))
+    contacts = _parse_support_contacts(await get_setting("support_contacts", ""), contact)
+    support_text = await get_support_panel_text(lang)
+    delete_label = "🗑 Delete" if lang == "en" else "🗑 Xóa"
+    delete_row = [InlineKeyboardButton(delete_label, callback_data="delete_msg")]
+
+    if not contacts and not str(await get_setting("support_panel_text", "") or "").strip():
+        text = (
+            "❌ Chưa cài đặt liên hệ hỗ trợ. Vui lòng báo admin cập nhật mục Support contacts trong Dashboard."
+            if lang != "en"
+            else "❌ Support contact is not configured. Please ask admin to set Support contacts in Dashboard settings."
+        )
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([delete_row]))
+        return
+
+    if contacts:
+        buttons = [InlineKeyboardButton(label, url=url) for label, url in contacts]
+        keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+        keyboard.append(delete_row)
+        await query.edit_message_text(support_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await query.edit_message_text(support_text, reply_markup=InlineKeyboardMarkup([delete_row]))
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query

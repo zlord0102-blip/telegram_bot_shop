@@ -283,5 +283,5 @@ Trong extension:
 
 - Không lưu plain raw license key trong database của bạn nếu không cần.
 - Sau khi activate thành công, chỉ dùng `activationToken`.
-- `extensionCode` là public, nhưng `SUPABASE_SECRET_KEY` hoặc legacy `SUPABASE_SERVICE_ROLE_KEY` phải chỉ nằm ở server.
+- `extensionCode` là public, nhưng `SUPABASE_SECRET_KEY` phải chỉ nằm ở server. Không dùng lại legacy `SUPABASE_SERVICE_ROLE_KEY` nếu key đó đã bị lộ.
 - Public API route đã chạy server-side; extension chỉ gọi HTTP tới dashboard domain của bạn.
