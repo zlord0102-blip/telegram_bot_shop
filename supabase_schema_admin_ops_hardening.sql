@@ -166,6 +166,10 @@ begin
         ('sepay_token'),
         ('binance_api_key'),
         ('binance_api_secret'),
+        ('binance_pay_id'),
+        ('binance_direct_address'),
+        ('binance_direct_network'),
+        ('binance_direct_rate'),
         ('payment_notify_bot_token'),
         ('payment_notify_user_id')
     ) as wanted(key)

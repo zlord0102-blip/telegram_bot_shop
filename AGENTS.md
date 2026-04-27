@@ -1,65 +1,54 @@
-# Agent Operating Instructions
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
-You are an autonomous coding agent working in this repository.
-Follow these instructions strictly.
+Tradeoff: These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
-## Canonical State (MANDATORY)
+1. Think Before Coding
+Don't assume. Don't hide confusion. Surface tradeoffs.
 
-- Maintain a single Continuity Ledger in `CONTINUITY.md`.
-- `CONTINUITY.md` is the canonical, compaction-safe source of truth.
-- Do NOT rely on earlier chat text or memory unless it is reflected in the ledger.
+Before implementing:
 
-## Every Turn (Required Procedure)
+State your assumptions explicitly. If uncertain, ask.
+If multiple interpretations exist, present them - don't pick silently.
+If a simpler approach exists, say so. Push back when warranted.
+If something is unclear, stop. Name what's confusing. Ask.
+2. Simplicity First
+Minimum code that solves the problem. Nothing speculative.
 
-1. Read `CONTINUITY.md` in full.
-2. Update it to reflect the latest:
-   - Goal and success criteria
-   - Constraints / assumptions
-   - Key decisions
-   - Current progress state (Done / Now / Next)
-   - Open questions (mark **UNCONFIRMED** if unsure)
-3. Only then proceed with the task.
+No features beyond what was asked.
+No abstractions for single-use code.
+No "flexibility" or "configurability" that wasn't requested.
+No error handling for impossible scenarios.
+If you write 200 lines and it could be 50, rewrite it.
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
-## When to Update the Ledger
+3. Surgical Changes
+Touch only what you must. Clean up only your own mess.
 
-Update `CONTINUITY.md` immediately whenever any of the following change:
+When editing existing code:
 
-- The goal or scope
-- Constraints or assumptions
-- A key decision is made or reversed
-- Progress state changes
-- A tool / command produces an important result
+Don't "improve" adjacent code, comments, or formatting.
+Don't refactor things that aren't broken.
+Match existing style, even if you'd do it differently.
+If you notice unrelated dead code, mention it - don't delete it.
+When your changes create orphans:
 
-Keep updates concise and factual. No transcripts.
+Remove imports/variables/functions that YOUR changes made unused.
+Don't remove pre-existing dead code unless asked.
+The test: Every changed line should trace directly to the user's request.
 
-## Compaction / Recall Loss
+4. Goal-Driven Execution
+Define success criteria. Loop until verified.
 
-If you detect missing recall, summarization, or context compaction:
+Transform tasks into verifiable goals:
 
-- Rebuild the ledger from visible context
-- Mark gaps as **UNCONFIRMED**
-- Ask at most 1–3 targeted clarification questions
-- Continue execution using the rebuilt ledger
+"Add validation" → "Write tests for invalid inputs, then make them pass"
+"Fix the bug" → "Write a test that reproduces it, then make it pass"
+"Refactor X" → "Ensure tests pass before and after"
+For multi-step tasks, state a brief plan:
 
-## Planning vs Continuity
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-- Use `functions.update_plan` only for short-term execution scaffolding
-  (3–7 steps with pending / in_progress / completed).
-- Do NOT use it as long-term memory.
-- Long-running intent, rationale, and state belong in `CONTINUITY.md`.
-
-## Communication Style
-
-- Begin replies with a short **Ledger Snapshot**:
-  - Goal
-  - Now / Next
-  - Open Questions
-- Only print the full ledger if it materially changed or if the user asks.
-
-## Scope
-
-- Act only within this repository and the user’s instructions.
-- Do not invent requirements or decisions.
-- If uncertain, mark **UNCONFIRMED** and ask.
-
-End of instructions.
+These guidelines are working if: fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

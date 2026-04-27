@@ -1,5 +1,6 @@
 from keyboards import user_reply_keyboard
 from database import get_setting, get_ui_flags as _get_ui_flags
+from helpers.bot_messages import get_cached_common_button_label, warm_bot_button_labels
 from locales import get_text
 
 
@@ -12,7 +13,17 @@ async def get_ui_flags() -> dict:
 
 async def get_user_keyboard(lang: str):
     flags = await get_ui_flags()
-    return user_reply_keyboard(lang, flags)
+    await warm_bot_button_labels(lang)
+    labels = {
+        "shop": get_cached_common_button_label("reply.shop", lang),
+        "balance": get_cached_common_button_label("reply.balance", lang),
+        "deposit": get_cached_common_button_label("reply.deposit", lang),
+        "withdraw": get_cached_common_button_label("reply.withdraw", lang),
+        "history": get_cached_common_button_label("reply.history", lang),
+        "support": get_cached_common_button_label("reply.support", lang),
+        "language": get_cached_common_button_label("reply.language", lang),
+    }
+    return user_reply_keyboard(lang, flags, labels=labels)
 
 
 def _parse_shop_page_size(raw_value: str, default: int = 10) -> int:

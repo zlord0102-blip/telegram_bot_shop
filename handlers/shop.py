@@ -26,13 +26,24 @@ from helpers.history_menu import build_history_menu
 from helpers.menu import delete_last_menu_message, set_last_menu_message, clear_last_menu_message
 from helpers.sepay_state import mark_vietqr_message, mark_bot_message
 from helpers.formatting import format_stock_items
-from helpers.shop_catalog import build_sale_catalog_view, build_shop_folder_view, build_shop_top_level_view
+from helpers.bot_messages import (
+    edit_bot_message_text,
+    get_cached_common_button_label,
+    render_bot_message,
+    reply_bot_message,
+    warm_bot_button_labels,
+)
+from helpers.shop_catalog import (
+    build_sale_catalog_message,
+    build_shop_folder_view,
+    build_shop_top_level_message,
+)
 from helpers.purchase_messages import (
     build_delivery_message,
     build_purchase_summary_text,
 )
 from helpers.telegram_ui import build_product_button_kwargs, build_product_title
-from helpers.telegram_resilience import safe_answer_callback_query, telegram_api_call
+from helpers.telegram_resilience import edit_or_reply_callback_message, safe_answer_callback_query, telegram_api_call
 from helpers.binance_client import (
     BinanceApiError,
     BinanceConfigError,
@@ -118,15 +129,15 @@ def make_file(items: list, header: str = "") -> io.BytesIO:
 def order_detail_actions_keyboard(product_id: int | None, lang: str = "vi") -> InlineKeyboardMarkup:
     rows = []
     if product_id:
-        rebuy_text = "🔁 Mua lại" if lang == "vi" else "🔁 Buy again"
+        rebuy_text = get_cached_common_button_label("button.rebuy", lang)
         rows.append([InlineKeyboardButton(rebuy_text, callback_data=f"buy_{int(product_id)}")])
-    history_text = "📜 Lịch sử" if lang == "vi" else "📜 History"
-    support_text = "🆘 Hỗ trợ" if lang == "vi" else "🆘 Support"
+    history_text = get_cached_common_button_label("button.history", lang)
+    support_text = get_cached_common_button_label("button.support", lang)
     rows.append([
         InlineKeyboardButton(history_text, callback_data="history"),
         InlineKeyboardButton(support_text, callback_data="support"),
     ])
-    rows.append([InlineKeyboardButton("🗑 Xóa" if lang == "vi" else "🗑 Delete", callback_data="delete_msg")])
+    rows.append([InlineKeyboardButton(get_cached_common_button_label("button.delete", lang), callback_data="delete_msg")])
     return InlineKeyboardMarkup(rows)
 
 def format_pricing_rules(product: dict, lang: str = "vi") -> str:
@@ -194,6 +205,65 @@ def format_product_overview(product: dict, include_usdt_price: bool = False, lan
     return "\n".join(lines)
 
 
+CHECKOUT_ROUTE_WALLET_VND = "wallet_vnd"
+CHECKOUT_ROUTE_WALLET_USDT = "wallet_usdt"
+CHECKOUT_ROUTE_VIETQR = "vietqr"
+CHECKOUT_ROUTE_BINANCE = "binance"
+
+
+def normalize_checkout_route(route: str | None) -> str | None:
+    route_value = str(route or "").strip().lower()
+    if route_value in {
+        CHECKOUT_ROUTE_WALLET_VND,
+        CHECKOUT_ROUTE_WALLET_USDT,
+        CHECKOUT_ROUTE_VIETQR,
+        CHECKOUT_ROUTE_BINANCE,
+    }:
+        return route_value
+    return None
+
+
+def checkout_route_currency(route: str | None) -> str:
+    return "usdt" if normalize_checkout_route(route) == CHECKOUT_ROUTE_WALLET_USDT else "vnd"
+
+
+def checkout_route_has_price(product: dict, route: str | None) -> bool:
+    route = normalize_checkout_route(route)
+    vnd_price = int(product.get("price") or 0)
+    usdt_price = float(product.get("price_usdt") or 0)
+    if route == CHECKOUT_ROUTE_WALLET_USDT:
+        return usdt_price > 0
+    if route == CHECKOUT_ROUTE_BINANCE:
+        return usdt_price > 0 or vnd_price > 0
+    return vnd_price > 0
+
+
+def checkout_direct_route_for_language(lang: str) -> str:
+    return CHECKOUT_ROUTE_BINANCE if lang == "en" else CHECKOUT_ROUTE_VIETQR
+
+
+def checkout_wallet_route_for_language(product: dict, lang: str) -> str:
+    if lang == "en" and float(product.get("price_usdt") or 0) > 0:
+        return CHECKOUT_ROUTE_WALLET_USDT
+    return CHECKOUT_ROUTE_WALLET_VND
+
+
+def checkout_route_label(route: str, product: dict, lang: str) -> str:
+    route = normalize_checkout_route(route) or CHECKOUT_ROUTE_WALLET_VND
+    if route == CHECKOUT_ROUTE_VIETQR:
+        return get_cached_common_button_label("button.vietqr", lang)
+    if route == CHECKOUT_ROUTE_BINANCE:
+        return get_cached_common_button_label("button.binance", lang)
+    if route == CHECKOUT_ROUTE_WALLET_USDT:
+        price_usdt = float(product.get("price_usdt") or 0)
+        price_text = f" • {price_usdt:g} USDT" if price_usdt > 0 else ""
+        return ("💰 Wallet" if lang == "en" else "💵 Ví USDT") + price_text
+
+    preview_vnd_price = int(get_pricing_snapshot(product, 1, "vnd")["unit_price"])
+    price_text = f" • {preview_vnd_price:,}đ" if preview_vnd_price > 0 else ""
+    return ("💰 Wallet" if lang == "en" else "💰 Ví") + price_text
+
+
 def build_payment_method_keyboard(
     *,
     product: dict,
@@ -205,37 +275,63 @@ def build_payment_method_keyboard(
     is_sale: bool = False,
 ) -> InlineKeyboardMarkup:
     keyboard = []
-    preview_vnd_price = int(get_pricing_snapshot(product, 1, "vnd")["unit_price"])
+    route_prefix = "salepayroute" if is_sale else "payroute"
     pay_prefix = "salepay" if is_sale else "pay"
+    payment_mode = (payment_mode or "hybrid").lower()
 
-    if product['price'] > 0 and (payment_mode != "balance" or max_vnd > 0):
-        if lang == "en":
-            if payment_mode == "direct":
-                label = "🏦 Bank transfer"
-            elif payment_mode == "hybrid":
-                label = f"💳 VND / transfer • {preview_vnd_price:,}đ"
-            else:
-                label = f"💰 VND balance • {preview_vnd_price:,}đ"
-        else:
-            vnd_label = "💰 Ví VNĐ"
-            show_price = True
-            if payment_mode == "direct":
-                vnd_label = "💳 Thanh toán trực tiếp"
-                show_price = False
-            elif payment_mode == "hybrid":
-                vnd_label = "💳 VNĐ / chuyển khoản"
-            label = f"{vnd_label} • {preview_vnd_price:,}đ" if show_price else vnd_label
-        keyboard.append([InlineKeyboardButton(label, callback_data=f"{pay_prefix}_vnd_{product_id}")])
+    if payment_mode == "direct":
+        route = checkout_direct_route_for_language(lang)
+        if checkout_route_has_price(product, route):
+            keyboard.append([
+                InlineKeyboardButton(
+                    checkout_route_label(route, product, lang),
+                    callback_data=f"{route_prefix}_{route}_{product_id}",
+                )
+            ])
+    elif payment_mode == "hybrid":
+        wallet_route = checkout_wallet_route_for_language(product, lang)
+        if wallet_route == CHECKOUT_ROUTE_WALLET_USDT:
+            if float(product.get("price_usdt") or 0) > 0:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        checkout_route_label(wallet_route, product, lang),
+                        callback_data=f"{route_prefix}_{wallet_route}_{product_id}",
+                    )
+                ])
+        elif int(product.get("price") or 0) > 0:
+            keyboard.append([
+                InlineKeyboardButton(
+                    checkout_route_label(wallet_route, product, lang),
+                    callback_data=f"{route_prefix}_{wallet_route}_{product_id}",
+                )
+            ])
 
-    if product['price_usdt'] > 0 and max_usdt > 0:
-        usdt_label = (
-            f"💵 USDT balance • {product['price_usdt']} USDT"
-            if lang == "en"
-            else f"💵 Ví USDT • {product['price_usdt']} USDT"
-        )
-        keyboard.append([InlineKeyboardButton(usdt_label, callback_data=f"{pay_prefix}_usdt_{product_id}")])
+        direct_route = checkout_direct_route_for_language(lang)
+        if checkout_route_has_price(product, direct_route):
+            keyboard.append([
+                InlineKeyboardButton(
+                    checkout_route_label(direct_route, product, lang),
+                    callback_data=f"{route_prefix}_{direct_route}_{product_id}",
+                )
+            ])
+    else:
+        if int(product.get("price") or 0) > 0 and max_vnd > 0:
+            keyboard.append([
+                InlineKeyboardButton(
+                    checkout_route_label(CHECKOUT_ROUTE_WALLET_VND, product, lang),
+                    callback_data=f"{pay_prefix}_vnd_{product_id}",
+                )
+            ])
 
-    keyboard.append([InlineKeyboardButton("🗑 Xóa" if lang != "en" else "🗑 Delete", callback_data="delete_msg")])
+        if float(product.get("price_usdt") or 0) > 0 and max_usdt > 0:
+            keyboard.append([
+                InlineKeyboardButton(
+                    checkout_route_label(CHECKOUT_ROUTE_WALLET_USDT, product, lang),
+                    callback_data=f"{pay_prefix}_usdt_{product_id}",
+                )
+            ])
+
+    keyboard.append([InlineKeyboardButton(get_cached_common_button_label("button.delete", lang), callback_data="delete_msg")])
     return InlineKeyboardMarkup(keyboard)
 
 
@@ -244,6 +340,7 @@ def clear_buy_state(context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("buying_sale_item_id", None)
     context.user_data.pop("buying_max", None)
     context.user_data.pop("buying_currency", None)
+    context.user_data.pop("buying_payment_route", None)
 
 
 def persistent_reply_keyboard(
@@ -260,8 +357,9 @@ def persistent_reply_keyboard(
     )
 
 
-async def build_checkout_purchase_context(product: dict, user_id: int, currency: str) -> dict:
+async def build_checkout_purchase_context(product: dict, user_id: int, currency: str, route: str | None = None) -> dict:
     payment_mode = await get_payment_mode()
+    route = normalize_checkout_route(route)
     user_balance = await get_balance(user_id)
     user_balance_usdt = await get_balance_usdt(user_id)
     max_by_stock = get_max_quantity_by_stock(product, product["stock"])
@@ -277,21 +375,41 @@ async def build_checkout_purchase_context(product: dict, user_id: int, currency:
         payment_label_vi = "USDT"
         payment_label_en = "USDT"
     else:
-        if payment_mode == "balance":
+        if route == CHECKOUT_ROUTE_WALLET_VND or payment_mode == "balance":
             max_can_buy = (
                 get_max_affordable_quantity(product, user_balance, product["stock"], currency="vnd")
                 if product.get("price", 0) > 0
                 else 0
             )
+        elif route == CHECKOUT_ROUTE_BINANCE:
+            max_can_buy = max_by_stock if checkout_route_has_price(product, route) else 0
         else:
-            max_can_buy = max_by_stock if product.get("price", 0) > 0 else 0
+            max_can_buy = max_by_stock if checkout_route_has_price(product, route) else 0
         balance_text_vi = f"{user_balance:,}đ"
         balance_text_en = f"{user_balance:,}đ"
         payment_label_vi = "VNĐ"
         payment_label_en = "VND"
 
+    if route == CHECKOUT_ROUTE_VIETQR:
+        payment_label_vi = "VietQR"
+        payment_label_en = "VietQR"
+        balance_text_vi = "Không dùng ví"
+        balance_text_en = "No wallet balance required"
+    elif route == CHECKOUT_ROUTE_BINANCE:
+        payment_label_vi = "Binance"
+        payment_label_en = "Binance"
+        balance_text_vi = "Không dùng ví"
+        balance_text_en = "No wallet balance required"
+    elif route == CHECKOUT_ROUTE_WALLET_VND:
+        payment_label_vi = "Ví"
+        payment_label_en = "Wallet"
+    elif route == CHECKOUT_ROUTE_WALLET_USDT:
+        payment_label_vi = "Ví USDT"
+        payment_label_en = "Wallet"
+
     return {
         "payment_mode": payment_mode,
+        "payment_route": route,
         "user_balance": user_balance,
         "user_balance_usdt": user_balance_usdt,
         "max_can_buy": int(max_can_buy),
@@ -312,11 +430,11 @@ def build_quantity_keyboard(
     is_sale: bool = False,
 ) -> InlineKeyboardMarkup:
     keyboard: list[list[InlineKeyboardButton]] = []
-    delete_text = "🗑 Xóa" if lang != "en" else "🗑 Delete"
+    delete_text = get_cached_common_button_label("button.delete", lang)
     qty_prefix = "salebuyqty" if is_sale else "buyqty"
 
     if manual_entry:
-        quick_text = "🔢 Chọn nhanh lại" if lang != "en" else "🔢 Back to quick select"
+        quick_text = get_cached_common_button_label("button.quick_quantity", lang)
         keyboard.append([InlineKeyboardButton(quick_text, callback_data=f"{qty_prefix}quick_{currency}_{product_id}")])
     else:
         quick_buttons = [
@@ -328,7 +446,7 @@ def build_quantity_keyboard(
         for index in range(0, len(quick_buttons), 2):
             keyboard.append(quick_buttons[index:index + 2])
 
-        manual_text = "✍️ Nhập tay" if lang != "en" else "✍️ Enter manually"
+        manual_text = get_cached_common_button_label("button.manual_quantity", lang)
         keyboard.append([InlineKeyboardButton(manual_text, callback_data=f"{qty_prefix}manual_{currency}_{product_id}")])
 
     keyboard.append([InlineKeyboardButton(delete_text, callback_data="delete_msg")])
@@ -375,6 +493,118 @@ def build_quantity_prompt_text(
     return prompt
 
 
+async def render_quantity_prompt_message(
+    *,
+    product_name: str,
+    payment_label: str,
+    balance_text: str,
+    max_can_buy: int,
+    lang: str,
+    manual_entry: bool = False,
+    error_text: str | None = None,
+):
+    fallback = build_quantity_prompt_text(
+        product_name=product_name,
+        payment_label=payment_label,
+        balance_text=balance_text,
+        max_can_buy=max_can_buy,
+        lang=lang,
+        manual_entry=manual_entry,
+        error_text=error_text,
+    )
+    error_block = f"{error_text}\n\n" if error_text else ""
+    return await render_bot_message(
+        "quantity_manual_prompt" if manual_entry else "quantity_quick_prompt",
+        lang,
+        fallback,
+        variables={
+            "product_name": product_name,
+            "payment_label": payment_label,
+            "balance_text": balance_text,
+            "max_can_buy": max_can_buy,
+            "error_block": error_block,
+        },
+    )
+
+
+async def render_quantity_force_reply_message(*, lang: str, max_can_buy: int):
+    fallback = (
+        f"✍️ Nhập số lượng từ 1 đến {max_can_buy}."
+        if lang == "vi"
+        else f"✍️ Reply with a quantity from 1 to {max_can_buy}."
+    )
+    return await render_bot_message(
+        "quantity_force_reply_prompt",
+        lang,
+        fallback,
+        variables={"max_can_buy": max_can_buy},
+    )
+
+
+def build_payment_options_template_payload(
+    *,
+    product: dict,
+    lang: str,
+    payment_mode: str,
+    user_balance: int,
+    user_balance_usdt,
+    max_vnd: int,
+    max_usdt: int,
+    is_sale: bool = False,
+    include_usdt_price: bool = False,
+) -> tuple[str, dict[str, object]]:
+    product_summary = format_product_overview(product, include_usdt_price=include_usdt_price, lang=lang)
+    balance_lines: list[str] = []
+    product_price = int(product.get("price") or 0)
+    product_price_usdt = Decimal(str(product.get("price_usdt") or 0))
+    balance_usdt = Decimal(str(user_balance_usdt or 0))
+
+    if lang == "en":
+        if payment_mode == "balance":
+            if product_price > 0:
+                balance_lines.append(f"💳 VND Balance: {int(user_balance or 0):,}đ (max buy {max_vnd})")
+            if product_price_usdt > 0:
+                balance_lines.append(f"💵 USDT Balance: {balance_usdt:.2f} USDT (max buy {max_usdt})")
+            payment_prompt = "❌ Insufficient balance!" if (not is_sale and max_vnd == 0 and max_usdt == 0) else "Select payment method:"
+        else:
+            if product_price_usdt > 0:
+                balance_lines.append(f"💵 USDT Balance: {balance_usdt:.2f} USDT (max buy {max_usdt})")
+            payment_prompt = "Select payment method:"
+    else:
+        if payment_mode == "balance":
+            balance_lines.append(f"💳 Số dư VNĐ: {int(user_balance or 0):,}đ (mua tối đa {max_vnd})")
+            if is_sale:
+                if product_price_usdt > 0:
+                    balance_lines.append(f"💵 Số dư USDT: {balance_usdt:.2f} (mua tối đa {max_usdt})")
+            else:
+                balance_lines.append(f"💵 Số dư USDT: {balance_usdt:.2f} (mua tối đa {max_usdt})")
+
+        if is_sale:
+            payment_prompt = "💳 Chọn cách thanh toán Sale:"
+        elif payment_mode == "balance" and max_vnd == 0 and max_usdt == 0:
+            payment_prompt = "❌ Số dư không đủ. Vui lòng nạp thêm."
+        else:
+            payment_prompt = "💳 Chọn cách thanh toán:"
+
+    balance_summary = f"\n\n{chr(10).join(balance_lines)}" if balance_lines else ""
+    fallback = f"{product_summary}{balance_summary}\n\n{payment_prompt}"
+    variables = {
+        "product_name": str(product.get("name") or ""),
+        "product_summary": product_summary,
+        "balance_summary": balance_summary,
+        "payment_prompt": payment_prompt,
+        "price_vnd": f"{product_price:,}đ",
+        "price_usdt": f"{product_price_usdt} USDT",
+        "stock": int(product.get("stock") or 0),
+        "balance_vnd": f"{int(user_balance or 0):,}đ",
+        "balance_usdt": f"{balance_usdt:.2f} USDT",
+        "max_vnd": max_vnd,
+        "max_usdt": max_usdt,
+        "payment_mode": payment_mode,
+    }
+    return fallback, variables
+
+
 async def send_quantity_prompt(
     *,
     context: ContextTypes.DEFAULT_TYPE,
@@ -391,7 +621,7 @@ async def send_quantity_prompt(
     message=None,
     query=None,
 ):
-    text = build_quantity_prompt_text(
+    rendered = await render_quantity_prompt_message(
         product_name=str(product["name"]),
         payment_label=payment_label,
         balance_text=balance_text,
@@ -400,6 +630,7 @@ async def send_quantity_prompt(
         manual_entry=manual_entry,
         error_text=error_text,
     )
+    payload = rendered.to_telegram_kwargs()
     reply_markup = build_quantity_keyboard(
         product_id=product_id,
         currency=currency,
@@ -411,22 +642,25 @@ async def send_quantity_prompt(
 
     if query is not None:
         try:
-            await query.edit_message_text(text, reply_markup=reply_markup)
+            await telegram_api_call(
+                lambda: query.edit_message_text(**payload, reply_markup=reply_markup),
+                action="send_quantity_prompt.edit_message_text",
+            )
         except BadRequest as exc:
             if "Message is not modified" not in str(exc):
                 raise
         if manual_entry:
-            force_msg = await context.bot.send_message(
-                chat_id=query.message.chat_id,
-                text=(
-                    f"✍️ Nhập số lượng từ 1 đến {max_can_buy}."
-                    if lang == "vi"
-                    else f"✍️ Reply with a quantity from 1 to {max_can_buy}."
+            force_payload = (await render_quantity_force_reply_message(lang=lang, max_can_buy=max_can_buy)).to_telegram_kwargs()
+            force_msg = await telegram_api_call(
+                lambda: context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    **force_payload,
+                    reply_markup=ForceReply(
+                        selective=True,
+                        input_field_placeholder=("Ví dụ: 1" if lang == "vi" else "Example: 1"),
+                    ),
                 ),
-                reply_markup=ForceReply(
-                    selective=True,
-                    input_field_placeholder=("Ví dụ: 1" if lang == "vi" else "Example: 1"),
-                ),
+                action="send_quantity_prompt.force_reply",
             )
             set_last_menu_message(context, force_msg)
             return force_msg
@@ -435,16 +669,22 @@ async def send_quantity_prompt(
 
     if message is not None:
         if manual_entry:
-            prompt_msg = await message.reply_text(
-                text,
-                reply_markup=ForceReply(
-                    selective=True,
-                    input_field_placeholder=("Ví dụ: 1" if lang == "vi" else "Example: 1"),
+            prompt_msg = await telegram_api_call(
+                lambda: message.reply_text(
+                    **payload,
+                    reply_markup=ForceReply(
+                        selective=True,
+                        input_field_placeholder=("Ví dụ: 1" if lang == "vi" else "Example: 1"),
+                    ),
                 ),
+                action="send_quantity_prompt.reply_force",
             )
             set_last_menu_message(context, prompt_msg)
             return prompt_msg
-        prompt_msg = await message.reply_text(text, reply_markup=reply_markup)
+        prompt_msg = await telegram_api_call(
+            lambda: message.reply_text(**payload, reply_markup=reply_markup),
+            action="send_quantity_prompt.reply_text",
+        )
         set_last_menu_message(context, prompt_msg)
         return prompt_msg
 
@@ -579,6 +819,10 @@ def _format_vnd(amount: int | float | None) -> str:
     return f"{int(amount or 0):,}đ"
 
 
+def _html_pre_block(value: object) -> str:
+    return f"<pre>{html.escape(str(value or '').strip(), quote=False)}</pre>"
+
+
 def build_missing_balance_keyboard(
     missing_amount: int,
     lang: str,
@@ -595,20 +839,23 @@ def build_missing_balance_keyboard(
         [InlineKeyboardButton(deposit_label, callback_data=f"deposit_{amount}")]
     ]
     if back_callback:
-        back_label = "🔙 Back to product" if lang == "en" else "🔙 Quay lại sản phẩm"
+        back_label = get_cached_common_button_label("button.back_product", lang)
         rows.append([InlineKeyboardButton(back_label, callback_data=back_callback)])
     elif product_id:
-        back_label = "🔙 Back to product" if lang == "en" else "🔙 Quay lại sản phẩm"
+        back_label = get_cached_common_button_label("button.back_product", lang)
         rows.append([InlineKeyboardButton(back_label, callback_data=f"buy_{product_id}")])
-    rows.append([InlineKeyboardButton("🗑 Delete" if lang == "en" else "🗑 Xóa", callback_data="delete_msg")])
+    rows.append([InlineKeyboardButton(get_cached_common_button_label("button.delete", lang), callback_data="delete_msg")])
     return InlineKeyboardMarkup(rows)
 
 
-def build_direct_order_actions_keyboard(code: str, lang: str) -> InlineKeyboardMarkup:
-    check_text = "🔄 Check status" if lang == "en" else "🔄 Kiểm tra trạng thái"
-    history_text = "📜 History" if lang == "en" else "📜 Lịch sử"
-    support_text = "💬 Support" if lang == "en" else "💬 Hỗ trợ"
-    delete_text = "🗑 Delete" if lang == "en" else "🗑 Xóa"
+def build_direct_order_actions_keyboard(
+    code: str,
+    lang: str,
+) -> InlineKeyboardMarkup:
+    check_text = get_cached_common_button_label("button.check_status", lang)
+    history_text = get_cached_common_button_label("button.history", lang)
+    support_text = get_cached_common_button_label("button.support", lang)
+    delete_text = get_cached_common_button_label("button.delete", lang)
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(check_text, callback_data=f"directstatus:{code}")],
         [
@@ -617,6 +864,25 @@ def build_direct_order_actions_keyboard(code: str, lang: str) -> InlineKeyboardM
         ],
         [InlineKeyboardButton(delete_text, callback_data="delete_msg")],
     ])
+
+
+async def dismiss_checkout_prompt(query, *, lang: str) -> None:
+    if query is None or getattr(query, "message", None) is None:
+        return
+    try:
+        await query.message.delete()
+        return
+    except Exception:
+        pass
+    fallback_text = (
+        "✅ Đã tạo đơn. Vui lòng xem thông tin thanh toán bên dưới."
+        if lang != "en"
+        else "✅ Order created. Please use the payment details below."
+    )
+    try:
+        await query.edit_message_text(fallback_text, reply_markup=delete_keyboard())
+    except Exception:
+        return
 
 
 def build_direct_order_status_text(order: dict, product_name: str, lang: str) -> str:
@@ -672,9 +938,12 @@ def build_direct_order_status_text(order: dict, product_name: str, lang: str) ->
 
 
 async def direct_checkout_keyboard(product_id: int, quantity: int, *, lang: str, top_up_amount: int = 0):
-    rows = [[InlineKeyboardButton("💳 Ngân hàng", callback_data=f"directpay_vietqr_{product_id}_{quantity}")]]
-    if await get_binance_runtime_safe():
-        rows.append([InlineKeyboardButton("🟡 Binance", callback_data=f"directpay_binance_{product_id}_{quantity}")])
+    await warm_bot_button_labels(lang)
+    route = checkout_direct_route_for_language(lang)
+    if route == CHECKOUT_ROUTE_BINANCE:
+        rows = [[InlineKeyboardButton(get_cached_common_button_label("button.binance", lang), callback_data=f"directpay_binance_{product_id}_{quantity}")]]
+    else:
+        rows = [[InlineKeyboardButton(get_cached_common_button_label("button.vietqr", lang), callback_data=f"directpay_vietqr_{product_id}_{quantity}")]]
     if top_up_amount > 0:
         top_up_text = (
             f"➕ Top up missing {_format_vnd(top_up_amount)}"
@@ -682,14 +951,17 @@ async def direct_checkout_keyboard(product_id: int, quantity: int, *, lang: str,
             else f"➕ Nạp phần thiếu {_format_vnd(top_up_amount)}"
         )
         rows.append([InlineKeyboardButton(top_up_text, callback_data=f"deposit_{max(5000, int(top_up_amount))}")])
-    rows.append([InlineKeyboardButton("🗑 Delete" if lang == "en" else "🗑 Xóa", callback_data="delete_msg")])
+    rows.append([InlineKeyboardButton(get_cached_common_button_label("button.delete", lang), callback_data="delete_msg")])
     return InlineKeyboardMarkup(rows)
 
 
 async def sale_direct_checkout_keyboard(sale_item_id: int, quantity: int, *, lang: str, top_up_amount: int = 0):
-    rows = [[InlineKeyboardButton("💳 Ngân hàng", callback_data=f"saledirectpay_vietqr_{sale_item_id}_{quantity}")]]
-    if await get_binance_runtime_safe():
-        rows.append([InlineKeyboardButton("🟡 Binance", callback_data=f"saledirectpay_binance_{sale_item_id}_{quantity}")])
+    await warm_bot_button_labels(lang)
+    route = checkout_direct_route_for_language(lang)
+    if route == CHECKOUT_ROUTE_BINANCE:
+        rows = [[InlineKeyboardButton(get_cached_common_button_label("button.binance", lang), callback_data=f"saledirectpay_binance_{sale_item_id}_{quantity}")]]
+    else:
+        rows = [[InlineKeyboardButton(get_cached_common_button_label("button.vietqr", lang), callback_data=f"saledirectpay_vietqr_{sale_item_id}_{quantity}")]]
     if top_up_amount > 0:
         top_up_text = (
             f"➕ Top up missing {_format_vnd(top_up_amount)}"
@@ -697,7 +969,7 @@ async def sale_direct_checkout_keyboard(sale_item_id: int, quantity: int, *, lan
             else f"➕ Nạp phần thiếu {_format_vnd(top_up_amount)}"
         )
         rows.append([InlineKeyboardButton(top_up_text, callback_data=f"deposit_{max(5000, int(top_up_amount))}")])
-    rows.append([InlineKeyboardButton("🗑 Delete" if lang == "en" else "🗑 Xóa", callback_data="delete_msg")])
+    rows.append([InlineKeyboardButton(get_cached_common_button_label("button.delete", lang), callback_data="delete_msg")])
     return InlineKeyboardMarkup(rows)
 
 
@@ -716,7 +988,7 @@ async def prompt_direct_payment_options(
 ):
     delivered_quantity = quantity + max(0, int(bonus_quantity or 0))
     bonus_line = f"\n🎁 Tặng thêm: {bonus_quantity}" if bonus_quantity else ""
-    text = (
+    fallback = (
         "🏦 Chọn cách thanh toán\n\n"
         f"📦 Sản phẩm: {product['name']}\n"
         f"🔢 Số lượng mua: {quantity}\n"
@@ -727,7 +999,7 @@ async def prompt_direct_payment_options(
     )
     if lang == "en":
         bonus_line = f"\n🎁 Bonus: {bonus_quantity}" if bonus_quantity else ""
-        text = (
+        fallback = (
             "🏦 Choose a payment method\n\n"
             f"📦 Product: {product['name']}\n"
             f"🔢 Paid quantity: {quantity}\n"
@@ -736,6 +1008,20 @@ async def prompt_direct_payment_options(
             f"💰 Total: {int(total_price):,}đ\n\n"
             "Choose a method below to create the order."
         )
+    rendered = await render_bot_message(
+        "direct_payment_options",
+        lang,
+        fallback,
+        variables={
+            "product_name": str(product.get("name") or ""),
+            "quantity": quantity,
+            "delivered_quantity": delivered_quantity,
+            "bonus_quantity": int(bonus_quantity or 0),
+            "bonus_line": bonus_line,
+            "total_price": f"{int(total_price):,}đ",
+        },
+    )
+    payload = rendered.to_telegram_kwargs()
 
     if is_sale:
         keyboard = await sale_direct_checkout_keyboard(product_id, quantity, lang=lang, top_up_amount=top_up_amount)
@@ -743,13 +1029,13 @@ async def prompt_direct_payment_options(
         keyboard = await direct_checkout_keyboard(product_id, quantity, lang=lang, top_up_amount=top_up_amount)
     if message is not None:
         prompt_msg = await telegram_api_call(
-            lambda: message.reply_text(text, reply_markup=keyboard),
+            lambda: message.reply_text(**payload, reply_markup=keyboard),
             action="prompt_direct_payment_options.reply_text",
         )
         return prompt_msg
     if query is not None:
         await telegram_api_call(
-            lambda: query.edit_message_text(text, reply_markup=keyboard),
+            lambda: query.edit_message_text(**payload, reply_markup=keyboard),
             action="prompt_direct_payment_options.edit_message_text",
         )
         return query.message
@@ -815,14 +1101,13 @@ async def send_direct_payment(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
                 f"📝 Nội dung chuyển khoản: <code>{pay_code}</code>\n\n"
                 f"✅ Sau khi hệ thống nhận tiền, bot sẽ tự giao sản phẩm."
             )
-        user_keyboard = await get_user_keyboard(lang)
         photo_msg = await telegram_api_call(
             lambda: context.bot.send_photo(
                 chat_id=chat_id,
                 photo=qr_url,
                 caption=text,
                 parse_mode="HTML",
-                reply_markup=user_keyboard
+                reply_markup=build_direct_order_actions_keyboard(pay_code, lang),
             ),
             action="send_direct_payment.send_photo",
         )
@@ -846,12 +1131,11 @@ async def send_direct_payment(context: ContextTypes.DEFAULT_TYPE, chat_id: int, 
                 f"📝 Nội dung chuyển khoản: {pay_code}\n\n"
                 f"✅ Sau khi hệ thống nhận tiền, bot sẽ tự giao sản phẩm."
             )
-        user_keyboard = await get_user_keyboard(lang)
         msg = await telegram_api_call(
             lambda: context.bot.send_message(
                 chat_id=chat_id,
                 text=text,
-                reply_markup=user_keyboard
+                reply_markup=build_direct_order_actions_keyboard(pay_code, lang),
             ),
             action="send_direct_payment.send_message",
         )
@@ -944,59 +1228,120 @@ async def send_binance_direct_payment(
         raise BinanceDirectOrderError("duplicate_binance_amount")
 
     delivered_quantity = quantity + max(0, int(bonus_quantity or 0))
-    tag_value = str(runtime.get("address_tag") or "").strip()
-    tag_label = "Memo/Tag" if tag_value else ""
-    tag_block = f"\n🏷 {tag_label}: <code>{tag_value}</code>" if tag_value else ""
-    bonus_line = f"\n🎁 Tặng thêm: <code>{bonus_quantity}</code>" if bonus_quantity else ""
-    quoted_asset_block = ""
+    runtime_address = str(runtime.get("address") or "").strip()
+    payment_address = str(created_order.get("payment_address") or runtime_address).strip()
+    if payment_address and runtime_address and payment_address != runtime_address:
+        logger.warning(
+            "Binance direct address mismatch for code=%s: stored order address differs from runtime address "
+            "(order_len=%s runtime_len=%s source=%s)",
+            str(created_order.get("code") or code),
+            len(payment_address),
+            len(runtime_address),
+            runtime.get("address_source"),
+        )
+    payment_asset = str(created_order.get("payment_asset") or runtime.get("coin") or "").strip()
+    tag_value = str(created_order.get("payment_address_tag") or runtime.get("address_tag") or "").strip()
+    product_name_html = html.escape(str(product_name), quote=False)
+    payment_asset_html = html.escape(payment_asset, quote=False)
     network_label = str(runtime.get("network_label") or runtime["network"])
-    if quoted_asset_amount > 0:
-        quoted_asset_block = f"💵 Giá USDT gốc: <code>{format_binance_amount(quoted_asset_amount)} {runtime['coin']}</code>\n"
+    network_label_html = html.escape(network_label, quote=False)
+    pay_id = str(runtime.get("pay_id") or "").strip()
+    pay_id_block = _html_pre_block(pay_id) if pay_id else ""
+    payment_address_block = _html_pre_block(payment_address)
+    exact_amount_block = _html_pre_block(exact_amount_text)
+    support_code_block = _html_pre_block(str(created_order["code"]))
+    tag_label = "Memo/Tag" if tag_value else ""
+    tag_block_vi = f"🏷 {tag_label}:\n{_html_pre_block(tag_value)}\n" if tag_value else ""
+    tag_block_en = f"🏷 {tag_label}:\n{_html_pre_block(tag_value)}\n" if tag_value else ""
+    bonus_line = f"\n🎁 Tặng thêm: <code>{bonus_quantity}</code>" if bonus_quantity else ""
+    wallet_step = 2 if pay_id else 1
+    pay_section_vi = ""
+    pay_section_en = ""
+    if pay_id:
+        pay_section_vi = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔶 CÁCH 1: BINANCE PAY (Miễn phí network)\n\n"
+            "🆔 Binance ID:\n"
+            f"{pay_id_block}\n"
+            f"💵 Số tiền ({payment_asset_html}):\n"
+            f"{exact_amount_block}\n"
+            "📝 Ghi chú:\n"
+            f"{support_code_block}\n"
+            "⚠️ Ghi chú PHẢI đúng.\n\n"
+        )
+        pay_section_en = (
+            "━━━━━━━━━━━━━━━━━━━━\n"
+            "🔶 OPTION 1: BINANCE PAY (No network fee)\n\n"
+            "🆔 Binance ID:\n"
+            f"{pay_id_block}\n"
+            f"💵 Amount ({payment_asset_html}):\n"
+            f"{exact_amount_block}\n"
+            "📝 Note:\n"
+            f"{support_code_block}\n"
+            "⚠️ The note must be exact.\n\n"
+        )
+    wallet_section_vi = (
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 CÁCH {wallet_step}: CHUYỂN VÍ ({network_label_html})\n\n"
+        "📍 Địa chỉ:\n"
+        f"{payment_address_block}\n"
+        f"{tag_block_vi}"
+        f"🌐 Network: <b>{network_label_html}</b>\n"
+        f"💵 Số tiền ({payment_asset_html}):\n"
+        f"{exact_amount_block}\n"
+        "📝 Mã hỗ trợ:\n"
+        f"{support_code_block}\n\n"
+    )
+    wallet_section_en = (
+        "━━━━━━━━━━━━━━━━━━━━\n"
+        f"💳 OPTION {wallet_step}: WALLET TRANSFER ({network_label_html})\n\n"
+        "📍 Address:\n"
+        f"{payment_address_block}\n"
+        f"{tag_block_en}"
+        f"🌐 Network: <b>{network_label_html}</b>\n"
+        f"💵 Amount ({payment_asset_html}):\n"
+        f"{exact_amount_block}\n"
+        "📝 Support code:\n"
+        f"{support_code_block}\n\n"
+    )
 
     text = (
-        f"{'🟡 Thanh toán Binance SALE' if sale_item_id else '🟡 Thanh toán Binance'}\n\n"
-        f"📦 Sản phẩm: <code>{product_name}</code>\n"
+        f"{'🟡 THÔNG TIN THANH TOÁN BINANCE SALE' if sale_item_id else '🟡 THÔNG TIN THANH TOÁN BINANCE'}\n\n"
+        f"📦 Sản phẩm: <code>{product_name_html}</code>\n"
         f"🔢 Số lượng mua: <code>{quantity}</code>\n"
         f"📥 Số lượng nhận: <code>{delivered_quantity}</code>"
         f"{bonus_line}\n\n"
-        f"🪙 Coin: <code>{runtime['coin']}</code>\n"
-        f"🌐 Network: <code>{network_label}</code>\n"
-        f"🏦 Address: <code>{runtime['address']}</code>"
-        f"{tag_block}\n"
-        f"{quoted_asset_block}"
-        f"💰 Số tiền chính xác: <code>{exact_amount_text} {runtime['coin']}</code>\n"
-        f"📝 Mã hỗ trợ: <code>{created_order['code']}</code>\n\n"
+        f"{pay_section_vi}"
+        f"{wallet_section_vi}"
+        "━━━━━━━━━━━━━━━━━━━━\n"
         "⚠️ Chuyển đúng network và đúng số tiền.\n"
-        "Không cần gửi ảnh chụp màn hình.\n"
-        "✅ Sau khi Binance ghi nhận, hệ thống sẽ tự gửi sản phẩm."
+        "⚠️ Không cần gửi ảnh chụp màn hình.\n"
+        "🤖 BEP20 sẽ được hệ thống tự kiểm tra trong 1-2 phút.\n"
+        "ℹ️ Binance Pay dùng cùng số tiền và ghi chú ở trên để đối soát; ghi chú phải đúng."
     )
     if lang == "en":
         bonus_line = f"\n🎁 Bonus: <code>{bonus_quantity}</code>" if bonus_quantity else ""
         text = (
-            f"{'🟡 Binance SALE payment' if sale_item_id else '🟡 Binance payment'}\n\n"
-            f"📦 Product: <code>{product_name}</code>\n"
+            f"{'🟡 BINANCE SALE PAYMENT INFO' if sale_item_id else '🟡 BINANCE PAYMENT INFO'}\n\n"
+            f"📦 Product: <code>{product_name_html}</code>\n"
             f"🔢 Paid quantity: <code>{quantity}</code>\n"
             f"📥 Delivered quantity: <code>{delivered_quantity}</code>"
             f"{bonus_line}\n\n"
-            f"🪙 Coin: <code>{runtime['coin']}</code>\n"
-            f"🌐 Network: <code>{network_label}</code>\n"
-            f"🏦 Address: <code>{runtime['address']}</code>"
-            f"{tag_block}\n"
-            f"{quoted_asset_block.replace('Giá USDT gốc', 'Listed USDT price')}"
-            f"💰 Exact amount: <code>{exact_amount_text} {runtime['coin']}</code>\n"
-            f"📝 Support code: <code>{created_order['code']}</code>\n\n"
+            f"{pay_section_en}"
+            f"{wallet_section_en}"
+            "━━━━━━━━━━━━━━━━━━━━\n"
             "⚠️ Send with the correct network and exact amount.\n"
             "⚠️ No screenshot is required.\n"
-            "✅ The system will auto-deliver after Binance confirms the deposit."
+            "🤖 BEP20 transfers are checked automatically every 1-2 minutes.\n"
+            "ℹ️ Binance Pay uses the same amount and exact note above for reconciliation; the note must be exact."
         )
 
-    user_keyboard = await get_user_keyboard(lang)
     msg = await telegram_api_call(
         lambda: context.bot.send_message(
             chat_id=chat_id,
             text=text,
             parse_mode="HTML",
-            reply_markup=user_keyboard,
+            reply_markup=build_direct_order_actions_keyboard(str(created_order["code"]), lang),
         ),
         action="send_binance_direct_payment.send_message",
     )
@@ -1005,6 +1350,59 @@ async def send_binance_direct_payment(
         "code": str(created_order["code"]),
         "amount_text": f"{exact_amount_text} {runtime['coin']}",
     }
+
+
+async def send_external_checkout_payment(
+    *,
+    context: ContextTypes.DEFAULT_TYPE,
+    chat_id: int,
+    lang: str,
+    user_id: int,
+    product: dict,
+    product_id: int,
+    quantity: int,
+    pricing: dict,
+    bonus_quantity: int,
+    route: str,
+    sale_item_id: int | None = None,
+):
+    route = normalize_checkout_route(route)
+    if route == CHECKOUT_ROUTE_BINANCE:
+        quoted_total_asset = None
+        if float(product.get("price_usdt") or 0) > 0:
+            usdt_pricing = get_pricing_snapshot(product, quantity, "usdt")
+            quoted_total_asset = float(usdt_pricing["total_price"])
+        return await send_binance_direct_payment(
+            context=context,
+            chat_id=chat_id,
+            lang=lang,
+            user_id=user_id,
+            product_id=product_id,
+            product_name=product["name"],
+            quantity=quantity,
+            unit_price=int(pricing["unit_price"]),
+            total_price=int(pricing["total_price"]),
+            bonus_quantity=bonus_quantity,
+            quoted_total_asset=quoted_total_asset,
+            sale_item_id=sale_item_id,
+        )
+
+    if route == CHECKOUT_ROUTE_VIETQR:
+        return await send_direct_payment(
+            context=context,
+            chat_id=chat_id,
+            lang=lang,
+            user_id=user_id,
+            product_id=product_id,
+            product_name=product["name"],
+            quantity=quantity,
+            unit_price=int(pricing["unit_price"]),
+            total_price=int(pricing["total_price"]),
+            bonus_quantity=bonus_quantity,
+            sale_item_id=sale_item_id,
+        )
+
+    raise ValueError(f"unsupported_external_checkout_route:{route}")
 
 def is_admin(user_id: int) -> bool:
     return user_id in ADMIN_IDS
@@ -1022,12 +1420,19 @@ async def handle_shop_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = await get_user_language(user_id)
     if not await is_feature_enabled("show_shop"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=await get_user_keyboard(lang))
+        await reply_bot_message(
+            update.message,
+            "feature_disabled",
+            lang,
+            "Tính năng này đang tạm tắt.",
+            fallback_emoji="⚠️",
+            reply_markup=await get_user_keyboard(lang),
+        )
         return
     await delete_last_menu_message(context, update.effective_chat.id)
-    text, markup = await build_shop_top_level_view(lang, page=0)
+    rendered, markup = await build_shop_top_level_message(lang, page=0)
     menu_msg = await update.message.reply_text(
-        text,
+        **rendered.to_telegram_kwargs(),
         reply_markup=markup,
     )
     set_last_menu_message(context, menu_msg)
@@ -1037,11 +1442,18 @@ async def sale_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = await get_user_language(user_id)
     if not await is_feature_enabled("show_shop"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=await get_user_keyboard(lang))
+        await reply_bot_message(
+            update.message,
+            "feature_disabled",
+            lang,
+            "Tính năng này đang tạm tắt.",
+            fallback_emoji="⚠️",
+            reply_markup=await get_user_keyboard(lang),
+        )
         return
     await delete_last_menu_message(context, update.effective_chat.id)
-    text, markup = await build_sale_catalog_view(lang, page=0)
-    menu_msg = await update.message.reply_text(text, reply_markup=markup)
+    rendered, markup = await build_sale_catalog_message(lang, page=0)
+    menu_msg = await update.message.reply_text(**rendered.to_telegram_kwargs(), reply_markup=markup)
     set_last_menu_message(context, menu_msg)
 
 
@@ -1129,7 +1541,12 @@ async def sync_purchase_context(
         clear_buy_state(context)
         return None, None
 
-    checkout_context = await build_checkout_purchase_context(product, user_id, currency)
+    checkout_context = await build_checkout_purchase_context(
+        product,
+        user_id,
+        currency,
+        route=context.user_data.get("buying_payment_route"),
+    )
     context.user_data["buying_product_id"] = product_id
     context.user_data["buying_max"] = int(checkout_context["max_can_buy"])
     context.user_data["buying_currency"] = currency
@@ -1232,6 +1649,14 @@ async def process_buy_quantity_selection(
         balance = await get_balance(user_id)
 
     payment_mode = checkout_context["payment_mode"]
+    payment_route = normalize_checkout_route(checkout_context.get("payment_route") or context.user_data.get("buying_payment_route"))
+    if not payment_route:
+        if currency == "usdt":
+            payment_route = CHECKOUT_ROUTE_WALLET_USDT
+        elif payment_mode == "direct":
+            payment_route = checkout_direct_route_for_language(lang)
+        else:
+            payment_route = CHECKOUT_ROUTE_WALLET_VND
 
     if currency == "usdt":
         if balance < total_price:
@@ -1250,7 +1675,7 @@ async def process_buy_quantity_selection(
                 query=query,
             )
     else:
-        if payment_mode == "balance" and balance < total_price:
+        if payment_route == CHECKOUT_ROUTE_WALLET_VND and balance < total_price:
             error_text = get_text(lang, "not_enough_balance").format(
                 balance=f"{balance:,}đ",
                 need=f"{total_price:,}đ",
@@ -1262,24 +1687,63 @@ async def process_buy_quantity_selection(
                 await message.reply_text(error_text, reply_markup=reply_markup)
             return None
 
-        should_direct = payment_mode == "direct" or (payment_mode == "hybrid" and balance < total_price)
-        if should_direct:
-            top_up_amount = max(0, int(total_price) - int(balance)) if payment_mode == "hybrid" else 0
-            prompt_msg = await prompt_direct_payment_options(
-                product=product,
-                quantity=quantity,
-                total_price=int(total_price),
-                bonus_quantity=bonus_quantity,
-                lang=lang,
-                product_id=product_id,
-                top_up_amount=top_up_amount,
-                message=message,
-                query=query,
-            )
-            if prompt_msg is not None:
-                set_last_menu_message(context, prompt_msg)
+        if payment_route in (CHECKOUT_ROUTE_VIETQR, CHECKOUT_ROUTE_BINANCE):
+            try:
+                await send_external_checkout_payment(
+                    context=context,
+                    chat_id=query.message.chat_id if query is not None else message.chat_id,
+                    lang=lang,
+                    user_id=user_id,
+                    product=product,
+                    product_id=product_id,
+                    quantity=quantity,
+                    pricing=pricing,
+                    bonus_quantity=bonus_quantity,
+                    route=payment_route,
+                )
+            except BinanceConfigError:
+                error_text = (
+                    "❌ Binance on-chain is not ready. Please try again later."
+                    if lang == "en"
+                    else "❌ Binance on-chain chưa sẵn sàng. Vui lòng thử lại sau."
+                )
+            except BinanceApiError:
+                error_text = (
+                    "❌ Could not connect to Binance right now. Please try again later."
+                    if lang == "en"
+                    else "❌ Không thể kết nối Binance lúc này. Vui lòng thử lại sau."
+                )
+            except (BinanceDirectOrderError, DirectOrderFulfillmentError):
+                error_text = (
+                    "❌ Could not create this payment order right now. Please try again later."
+                    if lang == "en"
+                    else "❌ Không thể tạo đơn thanh toán lúc này. Vui lòng thử lại sau."
+                )
+            else:
+                if query is not None:
+                    await dismiss_checkout_prompt(query, lang=lang)
+                clear_buy_state(context)
+                return None
+
+            if query is not None:
+                await query.edit_message_text(error_text, reply_markup=delete_keyboard())
+            elif message is not None:
+                await message.reply_text(error_text, reply_markup=delete_keyboard())
             clear_buy_state(context)
-            return prompt_msg
+            return None
+
+        if payment_mode == "direct":
+            error_text = (
+                "❌ Payment channel is unavailable for this language."
+                if lang == "en"
+                else "❌ Kênh thanh toán chưa sẵn sàng."
+            )
+            if query is not None:
+                await query.edit_message_text(error_text, reply_markup=delete_keyboard())
+            elif message is not None:
+                await message.reply_text(error_text, reply_markup=delete_keyboard())
+            clear_buy_state(context)
+            return None
 
     if currency == "usdt":
         price_for_order = int(float(unit_price) * USDT_RATE)
@@ -1381,7 +1845,12 @@ async def sync_sale_purchase_context(
         clear_buy_state(context)
         return None, None
 
-    checkout_context = await build_checkout_purchase_context(product, user_id, currency)
+    checkout_context = await build_checkout_purchase_context(
+        product,
+        user_id,
+        currency,
+        route=context.user_data.get("buying_payment_route"),
+    )
     context.user_data["buying_sale_item_id"] = sale_item_id
     context.user_data["buying_max"] = int(checkout_context["max_can_buy"])
     context.user_data["buying_currency"] = currency
@@ -1527,7 +1996,11 @@ async def process_sale_quantity_selection(
         total_price = int(pricing["total_price"])
         balance = await get_balance(user_id)
         payment_mode = checkout_context["payment_mode"]
-        if payment_mode == "balance" and balance < total_price:
+        payment_route = normalize_checkout_route(checkout_context.get("payment_route") or context.user_data.get("buying_payment_route"))
+        if not payment_route:
+            payment_route = checkout_direct_route_for_language(lang) if payment_mode == "direct" else CHECKOUT_ROUTE_WALLET_VND
+
+        if payment_route == CHECKOUT_ROUTE_WALLET_VND and balance < total_price:
             error_text = get_text(lang, "not_enough_balance").format(
                 balance=f"{balance:,}đ",
                 need=f"{total_price:,}đ",
@@ -1543,24 +2016,64 @@ async def process_sale_quantity_selection(
                 await message.reply_text(error_text, reply_markup=reply_markup)
             return None
 
-        should_direct = payment_mode == "direct" or (payment_mode == "hybrid" and balance < total_price)
-        if should_direct:
-            prompt_msg = await prompt_direct_payment_options(
-                product=product,
-                quantity=quantity,
-                total_price=int(total_price),
-                bonus_quantity=bonus_quantity,
-                lang=lang,
-                product_id=sale_item_id,
-                top_up_amount=max(0, int(total_price) - int(balance)) if payment_mode == "hybrid" else 0,
-                is_sale=True,
-                message=message,
-                query=query,
-            )
-            if prompt_msg is not None:
-                set_last_menu_message(context, prompt_msg)
+        if payment_route in (CHECKOUT_ROUTE_VIETQR, CHECKOUT_ROUTE_BINANCE):
+            try:
+                await send_external_checkout_payment(
+                    context=context,
+                    chat_id=query.message.chat_id if query is not None else message.chat_id,
+                    lang=lang,
+                    user_id=user_id,
+                    product=product,
+                    product_id=int(product.get("product_id") or product.get("id") or 0),
+                    quantity=quantity,
+                    pricing=pricing,
+                    bonus_quantity=bonus_quantity,
+                    route=payment_route,
+                    sale_item_id=sale_item_id,
+                )
+            except BinanceConfigError:
+                error_text = (
+                    "❌ Binance on-chain is not ready. Please try again later."
+                    if lang == "en"
+                    else "❌ Binance on-chain chưa sẵn sàng. Vui lòng thử lại sau."
+                )
+            except BinanceApiError:
+                error_text = (
+                    "❌ Could not connect to Binance right now. Please try again later."
+                    if lang == "en"
+                    else "❌ Không thể kết nối Binance lúc này. Vui lòng thử lại sau."
+                )
+            except (BinanceDirectOrderError, DirectOrderFulfillmentError):
+                error_text = (
+                    "❌ Could not create this Sale payment order right now. Please try again later."
+                    if lang == "en"
+                    else "❌ Không thể tạo đơn thanh toán Sale lúc này. Vui lòng thử lại sau."
+                )
+            else:
+                if query is not None:
+                    await dismiss_checkout_prompt(query, lang=lang)
+                clear_buy_state(context)
+                return None
+
+            if query is not None:
+                await query.edit_message_text(error_text, reply_markup=back_keyboard("sale_0"))
+            elif message is not None:
+                await message.reply_text(error_text, reply_markup=back_keyboard("sale_0"))
             clear_buy_state(context)
-            return prompt_msg
+            return None
+
+        if payment_mode == "direct":
+            error_text = (
+                "❌ Payment channel is unavailable for this language."
+                if lang == "en"
+                else "❌ Kênh thanh toán chưa sẵn sàng."
+            )
+            if query is not None:
+                await query.edit_message_text(error_text, reply_markup=back_keyboard("sale_0"))
+            elif message is not None:
+                await message.reply_text(error_text, reply_markup=back_keyboard("sale_0"))
+            clear_buy_state(context)
+            return None
 
     try:
         purchase = await fulfill_bot_sale_balance_purchase(
@@ -2000,9 +2513,17 @@ async def process_withdraw_account(update: Update, context: ContextTypes.DEFAULT
 async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await safe_answer_callback_query(query)
+    lang = await get_user_language(query.from_user.id)
 
     if not await is_feature_enabled("show_shop"):
-        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=delete_keyboard())
+        await edit_bot_message_text(
+            query,
+            "feature_disabled",
+            lang,
+            "Tính năng này đang tạm tắt.",
+            fallback_emoji="⚠️",
+            reply_markup=delete_keyboard(),
+        )
         return
 
     page = 0
@@ -2013,11 +2534,10 @@ async def show_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (TypeError, ValueError):
         page = 0
 
-    lang = await get_user_language(query.from_user.id)
-    text, markup = await build_shop_top_level_view(lang, page=page)
+    rendered, markup = await build_shop_top_level_message(lang, page=page)
     try:
         await query.edit_message_text(
-            text,
+            **rendered.to_telegram_kwargs(),
             reply_markup=markup,
         )
     except BadRequest as exc:
@@ -2032,7 +2552,14 @@ async def show_shop_folder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lang = await get_user_language(query.from_user.id)
     if not await is_feature_enabled("show_shop"):
-        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=delete_keyboard())
+        await edit_bot_message_text(
+            query,
+            "feature_disabled",
+            lang,
+            "Tính năng này đang tạm tắt.",
+            fallback_emoji="⚠️",
+            reply_markup=delete_keyboard(),
+        )
         return
 
     folder_id = 0
@@ -2072,9 +2599,17 @@ async def show_shop_folder(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def show_sale_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await safe_answer_callback_query(query)
+    lang = await get_user_language(query.from_user.id)
 
     if not await is_feature_enabled("show_shop"):
-        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=delete_keyboard())
+        await edit_bot_message_text(
+            query,
+            "feature_disabled",
+            lang,
+            "Tính năng này đang tạm tắt.",
+            fallback_emoji="⚠️",
+            reply_markup=delete_keyboard(),
+        )
         return
 
     page = 0
@@ -2085,10 +2620,9 @@ async def show_sale_catalog(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except (TypeError, ValueError):
         page = 0
 
-    lang = await get_user_language(query.from_user.id)
-    text, markup = await build_sale_catalog_view(lang, page=page)
+    rendered, markup = await build_sale_catalog_message(lang, page=page)
     try:
-        await query.edit_message_text(text, reply_markup=markup)
+        await query.edit_message_text(**rendered.to_telegram_kwargs(), reply_markup=markup)
     except BadRequest as exc:
         if "Message is not modified" not in str(exc):
             raise
@@ -2140,23 +2674,51 @@ async def show_sale_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("buying_product_id", None)
     context.user_data.pop("buying_max", None)
     context.user_data.pop("buying_currency", None)
+    context.user_data.pop("buying_payment_route", None)
 
-    text = format_product_overview(product, include_usdt_price=True, lang=lang)
-    if lang == "en":
-        if payment_mode == "balance":
-            text += f"\n\n💳 VND Balance: {user_balance:,}đ (max buy {max_vnd})"
-            if product["price_usdt"] > 0:
-                text += f"\n💵 USDT Balance: {user_balance_usdt:.2f} USDT (max buy {max_usdt})"
-        text += "\n\nSelect payment method:"
-    else:
-        if payment_mode == "balance":
-            text += f"\n\n💳 Số dư VNĐ: {user_balance:,}đ (mua tối đa {max_vnd})"
-            if product["price_usdt"] > 0:
-                text += f"\n💵 Số dư USDT: {user_balance_usdt:.2f} (mua tối đa {max_usdt})"
-        text += "\n\n💳 Chọn cách thanh toán Sale:"
+    if payment_mode == "direct":
+        route = checkout_direct_route_for_language(lang)
+        if not checkout_route_has_price(product, route):
+            await query.edit_message_text(
+                "❌ Sale này chưa có giá phù hợp cho kênh thanh toán hiện tại."
+                if lang != "en"
+                else "❌ This Sale item is not available for the current payment channel.",
+                reply_markup=back_keyboard("sale_0"),
+            )
+            clear_buy_state(context)
+            return
+
+        context.user_data["buying_payment_route"] = route
+        await refresh_sale_quantity_prompt(
+            context=context,
+            user_id=user_id,
+            lang=lang,
+            sale_item_id=sale_item_id,
+            currency=checkout_route_currency(route),
+            query=query,
+        )
+        return
+
+    fallback, variables = build_payment_options_template_payload(
+        product=product,
+        lang=lang,
+        payment_mode=payment_mode,
+        user_balance=user_balance,
+        user_balance_usdt=user_balance_usdt,
+        max_vnd=max_vnd,
+        max_usdt=max_usdt,
+        is_sale=True,
+        include_usdt_price=True,
+    )
+    rendered = await render_bot_message(
+        "sale_payment_options",
+        lang,
+        fallback,
+        variables=variables,
+    )
 
     await query.edit_message_text(
-        text,
+        **rendered.to_telegram_kwargs(),
         reply_markup=build_payment_method_keyboard(
             product=product,
             product_id=sale_item_id,
@@ -2199,83 +2761,73 @@ async def show_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     max_by_stock = get_max_quantity_by_stock(product, product["stock"])
 
-    if lang == 'en':
-        if payment_mode == "balance":
-            max_vnd = get_max_affordable_quantity(product, user_balance, product["stock"], currency="vnd") if product["price"] > 0 else 0
-        else:
-            max_vnd = max_by_stock if product['price'] > 0 else 0
-        max_usdt = (
-            get_max_affordable_quantity(product, user_balance_usdt, product["stock"], currency="usdt")
-            if product['price_usdt'] > 0
-            else 0
-        )
-        context.user_data['buying_product_id'] = product_id
-        context.user_data.pop('buying_max', None)
-        context.user_data.pop('buying_currency', None)
-        text = format_product_overview(product, include_usdt_price=True, lang="en")
-        if payment_mode == "balance":
-            if product['price'] > 0:
-                text += f"\n\n💳 VND Balance: {user_balance:,}đ (max buy {max_vnd})"
-            if product['price_usdt'] > 0:
-                text += f"\n💵 USDT Balance: {user_balance_usdt:.2f} USDT (max buy {max_usdt})"
-            if max_vnd == 0 and max_usdt == 0:
-                text += "\n\n❌ Insufficient balance!"
-            else:
-                text += "\n\nSelect payment method:"
-        else:
-            if product['price_usdt'] > 0:
-                text += f"\n\n💵 USDT Balance: {user_balance_usdt:.2f} USDT (max buy {max_usdt})"
-            text += "\n\nSelect payment method:"
-
-        await query.edit_message_text(
-            text,
-            reply_markup=build_payment_method_keyboard(
-                product=product,
-                product_id=product_id,
-                lang="en",
-                payment_mode=payment_mode,
-                max_vnd=max_vnd,
-                max_usdt=max_usdt,
-            ),
-        )
-        set_last_menu_message(context, query.message)
+    if payment_mode == "balance":
+        max_vnd = get_max_affordable_quantity(product, user_balance, product["stock"], currency="vnd") if product["price"] > 0 else 0
     else:
-        # Vietnamese: VND or USDT choice
-        if payment_mode == "balance":
-            max_vnd = get_max_affordable_quantity(product, user_balance, product["stock"], currency="vnd") if product["price"] > 0 else 0
-        else:
-            max_vnd = max_by_stock if product['price'] > 0 else 0
-        max_usdt = (
-            get_max_affordable_quantity(product, user_balance_usdt, product["stock"], currency="usdt")
-            if product['price_usdt'] > 0
-            else 0
+        max_vnd = max_by_stock if product['price'] > 0 else 0
+    max_usdt = (
+        get_max_affordable_quantity(product, user_balance_usdt, product["stock"], currency="usdt")
+        if product['price_usdt'] > 0
+        else 0
+    )
+
+    context.user_data['buying_product_id'] = product_id
+    context.user_data.pop('buying_max', None)
+    context.user_data.pop('buying_currency', None)
+    context.user_data.pop("buying_payment_route", None)
+
+    if payment_mode == "direct":
+        route = checkout_direct_route_for_language(lang)
+        if not checkout_route_has_price(product, route):
+            await query.edit_message_text(
+                "❌ Sản phẩm này chưa có giá phù hợp cho kênh thanh toán hiện tại."
+                if lang != "en"
+                else "❌ This product is not available for the current payment channel.",
+                reply_markup=delete_keyboard(),
+            )
+            clear_buy_state(context)
+            return
+
+        context.user_data["buying_payment_route"] = route
+        await refresh_quantity_prompt(
+            context=context,
+            user_id=user_id,
+            lang=lang,
+            product_id=product_id,
+            currency=checkout_route_currency(route),
+            query=query,
         )
+        return
 
-        context.user_data['buying_product_id'] = product_id
-        context.user_data.pop('buying_max', None)
-        context.user_data.pop('buying_currency', None)
-        text = format_product_overview(product, lang="vi")
-        if payment_mode == "balance":
-            text += f"\n\n💳 Số dư VNĐ: {user_balance:,}đ (mua tối đa {max_vnd})"
-            text += f"\n💵 Số dư USDT: {user_balance_usdt:.2f} (mua tối đa {max_usdt})"
+    fallback, variables = build_payment_options_template_payload(
+        product=product,
+        lang=lang,
+        payment_mode=payment_mode,
+        user_balance=user_balance,
+        user_balance_usdt=user_balance_usdt,
+        max_vnd=max_vnd,
+        max_usdt=max_usdt,
+        include_usdt_price=(lang == "en"),
+    )
+    rendered = await render_bot_message(
+        "product_payment_options",
+        lang,
+        fallback,
+        variables=variables,
+    )
 
-        if payment_mode == "balance" and max_vnd == 0 and max_usdt == 0:
-            text += "\n\n❌ Số dư không đủ. Vui lòng nạp thêm."
-        else:
-            text += "\n\n💳 Chọn cách thanh toán:"
-
-        await query.edit_message_text(
-            text,
-            reply_markup=build_payment_method_keyboard(
-                product=product,
-                product_id=product_id,
-                lang="vi",
-                payment_mode=payment_mode,
-                max_vnd=max_vnd,
-                max_usdt=max_usdt,
-            ),
-        )
-        set_last_menu_message(context, query.message)
+    await query.edit_message_text(
+        **rendered.to_telegram_kwargs(),
+        reply_markup=build_payment_method_keyboard(
+            product=product,
+            product_id=product_id,
+            lang=lang,
+            payment_mode=payment_mode,
+            max_vnd=max_vnd,
+            max_usdt=max_usdt,
+        ),
+    )
+    set_last_menu_message(context, query.message)
 
 async def select_payment_vnd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """User chọn thanh toán bằng VNĐ"""
@@ -2293,6 +2845,12 @@ async def select_payment_vnd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await query.edit_message_text(get_text(lang, "product_not_found"), reply_markup=delete_keyboard())
         clear_buy_state(context)
         return
+
+    payment_mode = await get_payment_mode()
+    if payment_mode == "direct":
+        context.user_data["buying_payment_route"] = checkout_direct_route_for_language(lang)
+    else:
+        context.user_data["buying_payment_route"] = CHECKOUT_ROUTE_WALLET_VND
 
     await refresh_quantity_prompt(
         context=context,
@@ -2320,12 +2878,53 @@ async def select_payment_usdt(update: Update, context: ContextTypes.DEFAULT_TYPE
         clear_buy_state(context)
         return
 
+    context.user_data["buying_payment_route"] = CHECKOUT_ROUTE_WALLET_USDT
+
     await refresh_quantity_prompt(
         context=context,
         user_id=user_id,
         lang=lang,
         product_id=product_id,
         currency="usdt",
+        query=query,
+    )
+
+
+async def select_checkout_route(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await safe_answer_callback_query(query)
+    if not await is_feature_enabled("show_shop"):
+        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=delete_keyboard())
+        return
+
+    parts = (query.data or "").split("_")
+    if len(parts) < 3:
+        await query.edit_message_text("❌ Dữ liệu thanh toán không hợp lệ.", reply_markup=delete_keyboard())
+        clear_buy_state(context)
+        return
+
+    product_id = int(parts[-1])
+    route = normalize_checkout_route("_".join(parts[1:-1]))
+    user_id = query.from_user.id
+    lang = await get_user_language(user_id)
+    if not route:
+        await query.edit_message_text("❌ Dữ liệu thanh toán không hợp lệ.", reply_markup=delete_keyboard())
+        clear_buy_state(context)
+        return
+
+    product = await get_product(product_id)
+    if not product:
+        await query.edit_message_text(get_text(lang, "product_not_found"), reply_markup=delete_keyboard())
+        clear_buy_state(context)
+        return
+
+    context.user_data["buying_payment_route"] = route
+    await refresh_quantity_prompt(
+        context=context,
+        user_id=user_id,
+        lang=lang,
+        product_id=product_id,
+        currency=checkout_route_currency(route),
         query=query,
     )
 
@@ -2340,6 +2939,11 @@ async def select_sale_payment_vnd(update: Update, context: ContextTypes.DEFAULT_
     sale_item_id = int(query.data.split("_")[2])
     user_id = query.from_user.id
     lang = await get_user_language(user_id)
+    payment_mode = await get_payment_mode()
+    if payment_mode == "direct":
+        context.user_data["buying_payment_route"] = checkout_direct_route_for_language(lang)
+    else:
+        context.user_data["buying_payment_route"] = CHECKOUT_ROUTE_WALLET_VND
     await refresh_sale_quantity_prompt(
         context=context,
         user_id=user_id,
@@ -2360,6 +2964,7 @@ async def select_sale_payment_usdt(update: Update, context: ContextTypes.DEFAULT
     sale_item_id = int(query.data.split("_")[2])
     user_id = query.from_user.id
     lang = await get_user_language(user_id)
+    context.user_data["buying_payment_route"] = CHECKOUT_ROUTE_WALLET_USDT
     await refresh_sale_quantity_prompt(
         context=context,
         user_id=user_id,
@@ -2442,6 +3047,48 @@ async def prompt_quick_quantity(update: Update, context: ContextTypes.DEFAULT_TY
         product_id=product_id,
         currency=currency,
         manual_entry=False,
+        query=query,
+    )
+
+
+async def select_sale_checkout_route(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await safe_answer_callback_query(query)
+    if not await is_feature_enabled("show_shop"):
+        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=delete_keyboard())
+        return
+
+    parts = (query.data or "").split("_")
+    if len(parts) < 3:
+        await query.edit_message_text("❌ Dữ liệu thanh toán Sale không hợp lệ.", reply_markup=delete_keyboard())
+        clear_buy_state(context)
+        return
+
+    sale_item_id = int(parts[-1])
+    route = normalize_checkout_route("_".join(parts[1:-1]))
+    user_id = query.from_user.id
+    lang = await get_user_language(user_id)
+    if not route:
+        await query.edit_message_text("❌ Dữ liệu thanh toán Sale không hợp lệ.", reply_markup=delete_keyboard())
+        clear_buy_state(context)
+        return
+
+    product = await get_active_sale_product(sale_item_id)
+    if not product:
+        await query.edit_message_text(
+            "❌ Sale này đã kết thúc hoặc hết hàng." if lang != "en" else "❌ This Sale item is no longer available.",
+            reply_markup=back_keyboard("sale_0"),
+        )
+        clear_buy_state(context)
+        return
+
+    context.user_data["buying_payment_route"] = route
+    await refresh_sale_quantity_prompt(
+        context=context,
+        user_id=user_id,
+        lang=lang,
+        sale_item_id=sale_item_id,
+        currency=checkout_route_currency(route),
         query=query,
     )
 
@@ -2562,13 +3209,7 @@ async def select_direct_payment_vietqr(update: Update, context: ContextTypes.DEF
         total_price=int(pricing["total_price"]),
         bonus_quantity=bonus_quantity,
     )
-    await query.edit_message_text(
-        "✅ Đã tạo đơn thanh toán thành công.\n"
-        f"💰 Số tiền: {payment_result['amount_text']}\n"
-        f"🧾 Mã thanh toán: {payment_result['code']}\n\n"
-        "Sau khi hệ thống nhận tiền, bot sẽ tự giao sản phẩm. Bạn không cần nhắn admin.",
-        reply_markup=build_direct_order_actions_keyboard(payment_result["code"], lang),
-    )
+    await dismiss_checkout_prompt(query, lang=lang)
 
 
 async def select_direct_payment_binance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2637,13 +3278,7 @@ async def select_direct_payment_binance(update: Update, context: ContextTypes.DE
         )
         return
 
-    await query.edit_message_text(
-        "✅ Đã tạo đơn thanh toán thành công.\n"
-        f"💰 Số tiền: {payment_result['amount_text']}\n"
-        f"🧾 Mã thanh toán: {payment_result['code']}\n\n"
-        "Sau khi hệ thống ghi nhận thanh toán, bot sẽ tự giao sản phẩm. Bạn không cần nhắn admin.",
-        reply_markup=build_direct_order_actions_keyboard(payment_result["code"], lang),
-    )
+    await dismiss_checkout_prompt(query, lang=lang)
 
 
 async def select_sale_direct_payment_vietqr(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2699,13 +3334,7 @@ async def select_sale_direct_payment_vietqr(update: Update, context: ContextType
         await query.edit_message_text(error_text, reply_markup=back_keyboard("sale_0"))
         return
 
-    await query.edit_message_text(
-        "✅ Đã tạo đơn thanh toán SALE thành công.\n"
-        f"💰 Số tiền: {payment_result['amount_text']}\n"
-        f"🧾 Mã thanh toán: {payment_result['code']}\n\n"
-        "Stock Sale đã được giữ tạm thời trong thời gian chờ thanh toán. Hệ thống nhận tiền sẽ tự giao hàng.",
-        reply_markup=build_direct_order_actions_keyboard(payment_result["code"], lang),
-    )
+    await dismiss_checkout_prompt(query, lang=lang)
 
 
 async def select_sale_direct_payment_binance(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2778,13 +3407,7 @@ async def select_sale_direct_payment_binance(update: Update, context: ContextTyp
         )
         return
 
-    await query.edit_message_text(
-        "✅ Đã tạo đơn thanh toán SALE thành công.\n"
-        f"💰 Số tiền: {payment_result['amount_text']}\n"
-        f"🧾 Mã thanh toán: {payment_result['code']}\n\n"
-        "Stock Sale đã được giữ tạm thời trong thời gian chờ thanh toán. Hệ thống ghi nhận thanh toán sẽ tự giao hàng.",
-        reply_markup=build_direct_order_actions_keyboard(payment_result["code"], lang),
-    )
+    await dismiss_checkout_prompt(query, lang=lang)
 
 
 async def show_direct_order_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2796,16 +3419,19 @@ async def show_direct_order_status(update: Update, context: ContextTypes.DEFAULT
     lang = await get_user_language(user_id)
 
     if not code:
-        await query.edit_message_text(
-            "❌ Không tìm thấy mã đơn." if lang != "en" else "❌ Order code not found.",
+        await edit_or_reply_callback_message(
+            query,
+            text="❌ Không tìm thấy mã đơn." if lang != "en" else "❌ Order code not found.",
             reply_markup=delete_keyboard(),
+            action="show_direct_order_status.missing_code",
         )
         return
 
     order = await get_user_direct_order_by_code(user_id, code)
     if not order:
-        await query.edit_message_text(
-            (
+        await edit_or_reply_callback_message(
+            query,
+            text=(
                 "❌ Không tìm thấy đơn này trong tài khoản của bạn.\n"
                 "Nếu bạn vừa tạo đơn, vui lòng bấm lại sau vài giây."
             )
@@ -2818,15 +3444,18 @@ async def show_direct_order_status(update: Update, context: ContextTypes.DEFAULT
                 [InlineKeyboardButton("💬 Hỗ trợ" if lang != "en" else "💬 Support", callback_data="support")],
                 [InlineKeyboardButton("🗑 Xóa" if lang != "en" else "🗑 Delete", callback_data="delete_msg")],
             ]),
+            action="show_direct_order_status.not_found",
         )
         return
 
     product = await get_product(int(order.get("product_id") or 0))
     product_name = str((product or {}).get("name") or f"#{order.get('product_id')}")
-    await query.edit_message_text(
-        build_direct_order_status_text(order, product_name, lang),
+    await edit_or_reply_callback_message(
+        query,
+        text=build_direct_order_status_text(order, product_name, lang),
         parse_mode="HTML",
         reply_markup=build_direct_order_actions_keyboard(str(order.get("code") or code), lang),
+        action="show_direct_order_status.status",
     )
 
 
@@ -2969,14 +3598,24 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await safe_answer_callback_query(query)
     if not await is_feature_enabled("show_history"):
-        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=delete_keyboard())
+        await edit_or_reply_callback_message(
+            query,
+            text="⚠️ Tính năng này đang tạm tắt.",
+            reply_markup=delete_keyboard(),
+            action="show_history.feature_disabled",
+        )
         return
 
     orders = await get_user_orders(query.from_user.id)
 
     if not orders:
-        await query.edit_message_text("📜 Bạn chưa có đơn hàng nào.", reply_markup=delete_keyboard())
-        set_last_menu_message(context, query.message)
+        sent_message = await edit_or_reply_callback_message(
+            query,
+            text="📜 Bạn chưa có đơn hàng nào.",
+            reply_markup=delete_keyboard(),
+            action="show_history.empty",
+        )
+        set_last_menu_message(context, sent_message or query.message)
         return
 
     lang = await get_user_language(query.from_user.id)
@@ -2989,12 +3628,13 @@ async def show_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
             page = 0
 
     text, reply_markup, _, _ = build_history_menu(orders, lang, page=page)
-    try:
-        await query.edit_message_text(text, reply_markup=reply_markup)
-    except BadRequest as exc:
-        if "Message is not modified" not in str(exc):
-            raise
-    set_last_menu_message(context, query.message)
+    sent_message = await edit_or_reply_callback_message(
+        query,
+        text=text,
+        reply_markup=reply_markup,
+        action="show_history.menu",
+    )
+    set_last_menu_message(context, sent_message or query.message)
 
 async def show_order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xem chi tiết đơn hàng - gửi file nếu nhiều items"""

@@ -96,10 +96,12 @@ BOT_DELIVERY_RETRY_MAX_SECONDS = _env_positive_int("BOT_DELIVERY_RETRY_MAX_SECON
 BOT_DELIVERY_RETRY_BATCH_LIMIT = _env_positive_int("BOT_DELIVERY_RETRY_BATCH_LIMIT", 20)
 PAYMENT_RELAY_TIMEOUT_SECONDS = _env_positive_float("PAYMENT_RELAY_TIMEOUT_SECONDS", 20.0)
 PAYMENT_RELAY_SSL_VERIFY = not _env_bool("PAYMENT_RELAY_SSL_NO_VERIFY", False)
+PAYMENT_RELAY_SSL_AUTO_FALLBACK_NO_VERIFY = _env_bool("PAYMENT_RELAY_SSL_AUTO_FALLBACK_NO_VERIFY", True)
 logger = logging.getLogger(__name__)
 _SEPAY_TOKEN_WARNED = False
 _SEPAY_TOKEN_OK = False
 _PAYMENT_RELAY_SSL_WARNING_LOGGED = False
+_PAYMENT_RELAY_SSL_FALLBACK_LOGGED = False
 
 
 def make_file(items: list, header: str = "") -> io.BytesIO:
@@ -157,7 +159,34 @@ def _build_payment_relay_ssl_context():
         return ssl.create_default_context(cafile=certifi.where())
 
 
+def _is_payment_relay_certificate_error(exc: BaseException) -> bool:
+    if isinstance(exc, (aiohttp.ClientConnectorCertificateError, ssl.SSLCertVerificationError)):
+        return True
+    message = str(exc).lower()
+    return (
+        "sslcertverificationerror" in message
+        or "certificate verify failed" in message
+        or "self-signed certificate" in message
+        or "self signed certificate" in message
+    )
+
+
+async def _post_payment_relay_notification(session, url: str, payload: dict, ssl_context):
+    async with session.post(url, json=payload, ssl=ssl_context) as resp:
+        if resp.status != 200:
+            body = await resp.text()
+            logger.warning("Relay notify failed (HTTP %s): %s", resp.status, body[:200])
+            return False
+        data = await resp.json()
+        if not data.get("ok"):
+            logger.warning("Relay notify failed: %s", data)
+            return False
+        return True
+
+
 async def send_payment_relay_notification(relay_token: str, relay_chat_id: int | None, text: str):
+    global _PAYMENT_RELAY_SSL_FALLBACK_LOGGED
+
     if not relay_token or relay_chat_id is None:
         return False
 
@@ -172,25 +201,35 @@ async def send_payment_relay_notification(relay_token: str, relay_chat_id: int |
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         try:
-            async with session.post(url, json=payload, ssl=ssl_context) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    logger.warning("Relay notify failed (HTTP %s): %s", resp.status, body[:200])
-                    return False
-                data = await resp.json()
-                if not data.get("ok"):
-                    logger.warning("Relay notify failed: %s", data)
-                    return False
-                return True
-        except aiohttp.ClientConnectorCertificateError as e:
-            logger.warning(
-                "Relay notify SSL verification failed: %s. "
-                "Install the intercepting CA and set PAYMENT_RELAY_CA_BUNDLE, "
-                "or temporarily set PAYMENT_RELAY_SSL_NO_VERIFY=true only for this relay path.",
-                e,
-            )
-            return False
+            return await _post_payment_relay_notification(session, url, payload, ssl_context)
         except Exception as e:
+            if (
+                ssl_context is not False
+                and PAYMENT_RELAY_SSL_AUTO_FALLBACK_NO_VERIFY
+                and _is_payment_relay_certificate_error(e)
+            ):
+                if not _PAYMENT_RELAY_SSL_FALLBACK_LOGGED:
+                    logger.warning(
+                        "Relay notify SSL verification failed and will retry once without SSL verification. "
+                        "For a permanent secure fix, set PAYMENT_RELAY_CA_BUNDLE to the intercepting CA PEM. "
+                        "Original error: %s",
+                        e,
+                    )
+                    _PAYMENT_RELAY_SSL_FALLBACK_LOGGED = True
+                try:
+                    return await _post_payment_relay_notification(session, url, payload, False)
+                except Exception as fallback_exc:
+                    logger.warning("Relay notify no-verify fallback exception: %s", fallback_exc)
+                    return False
+
+            if _is_payment_relay_certificate_error(e):
+                logger.warning(
+                    "Relay notify SSL verification failed: %s. "
+                    "Set PAYMENT_RELAY_CA_BUNDLE to the intercepting CA PEM, "
+                    "or set PAYMENT_RELAY_SSL_NO_VERIFY=true for this relay path.",
+                    e,
+                )
+                return False
             logger.warning("Relay notify exception: %s", e)
             return False
 

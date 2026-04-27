@@ -478,11 +478,19 @@ SUPABASE_SECRET_KEY=...
 ```
 ```
 # Chọn mode thanh toán sản phẩm
-# direct: luôn tạo VietQR khi mua hàng
-# hybrid: chỉ tạo VietQR khi thiếu balance
+# direct: external-only. Tiếng Việt -> VietQR, English -> Binance.
+# hybrid: chọn Wallet hoặc external. Tiếng Việt -> Wallet/VietQR, English -> Wallet/Binance.
 # balance: phải nạp balance trước khi mua
 PAYMENT_MODE=hybrid
 ```
+
+Với Binance on-chain, nên cấu hình trong Dashboard `Settings` để tránh nhầm API Secret với địa chỉ nạp:
+
+- `Binance API Key` và `Binance API Secret`: chỉ dùng để gọi API/checker, không hiển thị cho khách.
+- `Binance Pay ID`: nhập nếu muốn tin nhắn thanh toán hiện thêm Cách 1 Binance Pay.
+- `Deposit address hiển thị/copy cho khách`: địa chỉ nạp đúng network của cùng tài khoản Binance.
+- `Memo/Tag`: chỉ nhập nếu network yêu cầu.
+- `Coin`, `Network`, `Tỷ giá`: ví dụ `USDT`, `BSC`, `25000`.
 
 ### 3) Tạo admin cho Dashboard
 1. Tạo user trong Supabase Auth (email/password).

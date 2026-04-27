@@ -71,6 +71,429 @@ Next:
 Open Questions:
   - None.
 
+- Current scope add-on (latest request): convert row-level `Hành động` controls on the Products admin page into compact dropdown menus.
+- Constraints / assumptions:
+  - Keep the top-level create buttons as the primary "add" actions.
+  - Move only per-row CRUD actions into dropdowns for Products, Bot folders, and Format templates.
+  - Preserve the modal CRUD flow and existing mutation behavior.
+- Done:
+  - Ledger re-read at turn start and latest request captured.
+- Now:
+  - Verify and finish the Products page dropdown implementation, then run TypeScript/static checks.
+- Next:
+  - Report changed UI behavior and any verification/browser-use limits.
+- Open Questions:
+  - None.
+
+- Current scope progress update (Stock Sale computed count clarification):
+- Done:
+  - Confirmed and explained that `Stock Sale` is editable only for `Stock có sẵn`.
+  - Patched `admin_dashboard_telegram_bot/app/(admin)/sales/page.tsx`:
+    - Added `countStockLines(...)` and derived `newStockLineCount`.
+    - In `Stock mới` mode, `Stock Sale` now displays the computed valid line count from the stock textarea instead of a misleading stale default.
+    - Switching to `Stock mới` immediately syncs `stockQuantity` to the current textarea line count.
+    - Added helper text explaining that `Stock Sale` is auto-counted from the textarea in new-stock mode.
+    - Add button is disabled in new-stock mode until at least one valid stock line exists.
+  - Patched `admin_dashboard_telegram_bot/app/globals.css` with `.sale-field-hint`.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - `git diff --check -- app/(admin)/sales/page.tsx app/globals.css` passed with only LF/CRLF normalization warnings.
+    - HTTP smoke check for `http://127.0.0.1:3001/sales` returned 200.
+- Now:
+  - Summarize the behavior and fix to the user.
+- Next:
+  - If true browser-use tooling becomes available, visually verify the computed counter in the modal.
+- Open Questions:
+  - None.
+
+- Current scope progress update (Admin Dashboard all-page row action menus):
+- Done:
+  - Added/reused shared `RowActionMenu` in `admin_dashboard_telegram_bot/components/AdminUi.tsx`.
+  - Added global hover/focus/touch CSS for compact row menus in `admin_dashboard_telegram_bot/app/globals.css`.
+  - Converted row-level action controls to hover-only `...` dropdown menus on:
+    - Products / folders / format templates.
+    - Deposits, withdrawals, USDT withdrawals/deposits.
+    - Direct orders.
+    - Stock rows.
+    - Sale campaigns and sale items.
+    - License extensions, license keys, and activations.
+    - Users table chat action.
+  - Left page-level toolbar/workflow actions visible intentionally, including create/import/refresh/bulk/pagination/modal buttons.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - `git diff --check` for touched Dashboard TSX/CSS files passed with only LF/CRLF normalization warnings.
+    - Static search found no remaining old `product-row-actions`, `action-pill`, `openActionMenu`, or `renderActionDropdown` usages.
+    - React best-practices checklist was reviewed; no blocker found for this focused UI change.
+- Now:
+  - Summarize covered pages and verification to the user.
+- Next:
+  - If browser-use tooling becomes available, visually test hover/focus/open behavior across the converted pages.
+- Open Questions:
+  - True browser-use visual verification remains unavailable in this session due the previously blocked/missing browser-use callable tooling.
+
+- Current scope add-on (latest request): make every Telegram Bot-facing button label and text customizable from Dashboard.
+- User request:
+  - "Tôi muốn là tất cả Button và Text ở Telegram Bot đều có thể Custom được"
+- Constraints / assumptions:
+  - Treat bot-facing customer/admin Telegram messages and inline/reply keyboard labels as the customization target.
+  - Preserve existing behavior, callbacks, and payment/order flows while replacing hardcoded display copy with Dashboard-managed templates where practical.
+  - Keep this batch surgical: first build a central template registry/seed path and migrate high-impact hardcoded strings, then report any remaining inventory if the full migration is too large for one safe pass.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read continuity ledger at turn start.
+  - Captured the expanded customization request in the continuity ledger.
+- Now:
+  - Inventory hardcoded Telegram Bot strings/buttons and design the lowest-risk Dashboard-backed template layer.
+- Next:
+  - Patch Bot, SQL seeds, and Dashboard `/bot-messages` presets; run Python/Dashboard checks.
+- Open Questions:
+  - Exact "all" inventory may include admin-only operational messages, user-facing purchase flows, keyboard labels, and error notices; migrate in priority order and call out any remaining hardcoded strings explicitly.
+
+- Current scope interruption/question: Telegram custom emoji `.tgs` preview feasibility on `/bot-messages`.
+- User note:
+  - This is only a question, not an implementation request.
+  - User asks whether Telegram custom emoji delivered as `.tgs` can be displayed in the Bot Message preview using Telegram `getFile`/file download flow.
+- Now:
+  - Answer feasibility, limitations, and safest implementation shape without making more code changes.
+
+- Current scope add-on (latest request): implement full `.tgs` animated custom emoji preview on `/bot-messages`.
+- User request:
+  - "Tôi muốn dùng hẳn cách .tgs file luôn."
+- Constraints / assumptions:
+  - Use a server-side Dashboard API proxy so the Telegram Bot token is never exposed to the browser.
+  - Resolve a custom emoji ID through Telegram `getCustomEmojiStickers`, then `getFile`, then download the `.tgs` file.
+  - Decompress `.tgs` gzip to Lottie JSON server-side and render it in the Dashboard preview client-side.
+  - Keep thumbnail-only fallback out of scope unless `.tgs` is unavailable.
+  - Preserve unrelated dirty worktree changes and do not print secrets.
+- Done:
+  - Re-read continuity ledger at turn start.
+  - Captured the `.tgs` preview implementation request in the continuity ledger.
+- Now:
+  - Inspect Dashboard dependencies/env naming, then add Telegram custom emoji preview API and client renderer.
+- Next:
+  - Run Dashboard TypeScript checks and targeted route smoke checks.
+- Open Questions:
+  - Whether `lottie-web` is already installed is unknown until package inspection; if not present, use a lightweight browser-side dynamic loader or request dependency install only if necessary.
+
+- Current scope progress update (`.tgs` custom emoji preview):
+- Done:
+  - Confirmed Dashboard did not have `lottie-web`; installed `lottie-web@^5.12.2` in `admin_dashboard_telegram_bot`.
+  - Added server-side admin API proxy:
+    - `admin_dashboard_telegram_bot/app/api/admin/telegram-custom-emoji-preview/route.ts`
+    - validates admin session and numeric custom emoji ID.
+    - uses server-only `BOT_TOKEN`/`TELEGRAM_BOT_TOKEN`/`NEXT_TELEGRAM_BOT_TOKEN`.
+    - calls Telegram `getCustomEmojiStickers`, `getFile`, downloads `.tgs`, gunzips it, and returns Lottie JSON.
+    - never returns the Telegram file URL or bot token to the browser.
+  - Patched `/bot-messages` preview:
+    - Dynamically imports `lottie-web`.
+    - Fetches the proxy route with the current Supabase admin bearer token.
+    - Renders animated `.tgs` custom emoji in message and button previews when `custom_emoji_id` is set.
+  - Added scoped CSS for animated custom emoji preview containers.
+  - Kept previous broader button-label customization work intact.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - Dashboard `git diff --check` passed for edited Dashboard files with only LF/CRLF warning on CSS.
+    - Python AST check passed for touched Bot Python files from the earlier button-label batch.
+    - `python -B -c "import run"` passed.
+    - Unauthorized route smoke test returned HTTP 401, confirming the preview API is admin-protected.
+  - npm reported existing dependency audit findings after installing `lottie-web`: 1 moderate and 1 high vulnerability; no audit fix was run because that may introduce broader dependency changes.
+- Now:
+  - Summarize `.tgs` preview implementation, required env/config, and verification.
+- Next:
+  - User can set `BOT_TOKEN` in Dashboard `.env.local`, open `/bot-messages`, enter a custom emoji ID, and verify the animated preview.
+- Open Questions:
+  - Authenticated live Telegram preview was not tested because no admin browser session token was used in terminal smoke checks.
+
+- Current scope add-on (latest request): make bot-facing text/emoji customizable from Dashboard and polish the `/bot-messages` page.
+- User request:
+  - "Tất cả đều phải được Custom ở Dashboard".
+  - `/bot-messages` currently feels rough.
+- Constraints / assumptions:
+  - Prioritize wiring the known missing Sale entry button label/icon into Dashboard-managed bot message templates.
+  - Keep schema changes additive and backward-compatible.
+  - Improve `/bot-messages` CRUD ergonomics without inventing unsupported backend behavior.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read continuity ledger at turn start.
+  - Captured latest request in the continuity ledger.
+- Now:
+  - Inspect `/bot-messages` page/API, bot template loader, and Sale entry button rendering.
+- Next:
+  - Patch Bot + Dashboard + SQL seeds as needed, then run TypeScript/Python/static checks.
+- Open Questions:
+  - Exact full inventory of every bot-facing string may require a larger follow-up audit; this batch will start by making the existing bot template system cover the known Sale entry button and polishing its Dashboard UI.
+
+- Current scope progress update (Bot messages customization + UI):
+- Done:
+  - Added a reusable Bot button-template renderer in `helpers/bot_messages.py`.
+    - `body_text` becomes the button label.
+    - `custom_emoji_id` becomes Telegram `InlineKeyboardButton.icon_custom_emoji_id`.
+    - `fallback_emoji` becomes text-prefix fallback when no custom ID is set.
+  - Patched the Shop top-level catalog flow in `helpers/shop_catalog.py` so the `SALE đang mở` entry button reads `sale_entry_button` from `public.bot_message_templates`.
+  - Patched `keyboards/inline.py` so `products_keyboard(...)` and `main_menu_keyboard(...)` accept custom Sale button label/custom emoji args instead of forcing one hardcoded icon.
+  - Added `sale_entry_button` VI/EN seeds to:
+    - `supabase_schema_bot_message_templates.sql`
+    - `supabase_schema_all_in_one.sql`
+  - Patched `/api/admin/bot-messages` to merge the `sale_entry_button` preset into GET responses when the DB row is missing, without overwriting saved rows.
+  - Rebuilt `/bot-messages` UI:
+    - Dashboard `PageHeader`, stats cards, search/language filter, scannable table, status pills, structured editor, and Telegram preview.
+    - Added responsive Bot Messages CSS in `admin_dashboard_telegram_bot/app/globals.css`.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - Python AST check passed with `utf-8-sig` for edited Bot files.
+    - `python -B -c "import run"` passed.
+    - `/bot-messages` HTTP smoke check returned 200 from `http://127.0.0.1:3001/bot-messages`.
+    - Sale button template smoke test passed, proving edited template label/custom emoji reaches the first Sale button.
+    - Root and Dashboard `git diff --check` passed with only LF/CRLF warnings.
+- Now:
+  - Summarize changes, verification, and how to customize `SALE đang mở`.
+- Next:
+  - Broader hardcoded button/text inventory can be moved into `bot_message_templates` in further batches.
+- Open Questions:
+  - None for this batch.
+
+- Current scope add-on (latest request): identify where the Telegram inline keyboard button `SALE đang mở` emoji can be customized.
+- User evidence:
+  - Screenshot shows a main menu inline button with an emoji before `SALE đang mở`.
+- Constraints / assumptions:
+  - Distinguish the main Sale entry button from Sale item custom emojis and Sale message-template emojis.
+  - Avoid code changes unless the current source is clearly missing a needed customization path.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read continuity ledger at turn start.
+  - Captured the latest question in the continuity ledger.
+- Now:
+  - Search Bot keyboard/message code and Dashboard Sale fields to identify the source of truth.
+- Next:
+  - Answer precisely with file/location and whether it is Dashboard-configurable today.
+- Open Questions:
+  - None yet.
+
+- Current scope progress update (Sale button emoji source):
+- Done:
+  - Found the main `SALE đang mở` inline button in `keyboards/inline.py`.
+  - Confirmed the button label is `SALE đang mở` for Vietnamese and uses `icon_custom_emoji_id=DEFAULT_SALE_CUSTOM_EMOJI_ID`.
+  - Found `DEFAULT_SALE_CUSTOM_EMOJI_ID` in `helpers/telegram_ui.py`; this is a code constant, not currently exposed in Dashboard settings.
+  - Confirmed Dashboard Sale item `Custom emoji ID` affects Sale items/product buttons, not the main `SALE đang mở` entry button.
+  - Confirmed Sale campaign API has a default custom emoji field, but the current Campaign modal does not expose it and it is used as fallback for Sale items.
+- Now:
+  - Answer the user with exact locations and the current customization limitation.
+- Next:
+  - If requested, wire the main Sale entry button emoji to a Dashboard setting or to the Sale campaign/message template.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): explain/fix why `Stock Sale` is locked at the default value when adding Sale item with `Stock mới`.
+- User evidence:
+  - In the Sale item modal, `Stock mới` is selected and the `Stock Sale` field is disabled.
+  - User asks why it is limited at `10` and cannot be edited.
+- Constraints / assumptions:
+  - Backend for `add_item_new_stock` derives reservation count from `newStockText` line count, not from `stockQuantity`.
+  - For `Stock có sẵn`, `stockQuantity` should remain editable because it controls how much existing stock is reserved.
+  - Keep current API behavior; improve UI clarity and prevent misleading default values.
+- Done:
+  - Re-read continuity ledger at turn start.
+  - Confirmed API behavior: `add_item_new_stock` uses `cleanMultilineStock(body?.newStockText).length`; `stockQuantity` is only used for existing-stock reservation.
+- Now:
+  - Patch Sale modal UI so `Stock Sale` is clearly a computed count in `Stock mới` mode and editable only in `Stock có sẵn` mode.
+- Next:
+  - Run Dashboard TypeScript/static checks and `/sales` smoke check.
+- Open Questions:
+  - None.
+
+- Current scope progress update (Sale modal polish):
+- Done:
+  - Patched Sale modal JSX in `admin_dashboard_telegram_bot/app/(admin)/sales/page.tsx`:
+    - Added scoped `sale-modal`, `sale-form-grid`, `sale-field-wide`, and `sale-toggle` classes.
+    - Converted checkbox rows to proper toggle-style rows.
+    - Kept form payloads, submit handlers, and modal CRUD behavior unchanged.
+  - Added scoped Sale modal CSS in `admin_dashboard_telegram_bot/app/globals.css`:
+    - Styled Sale modal input/select/textarea controls so they no longer render as native browser defaults.
+    - Added modal header/body/footer spacing, full-width controls, field stacking, responsive grid behavior through existing media rules, and sticky footer for scrollable Sale item modal.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - `git diff --check -- app/(admin)/sales/page.tsx app/globals.css` passed with only LF/CRLF normalization warnings.
+    - HTTP smoke check for `http://127.0.0.1:3001/sales` returned 200.
+- Now:
+  - Summarize the modal UI cleanup to the user.
+- Next:
+  - If true browser-use tooling becomes available, visually verify the modal at desktop/mobile widths.
+- Open Questions:
+  - True browser-use visual verification remains unavailable in this session due the previously blocked/missing browser-use callable tooling.
+
+- Current scope add-on (latest request): fix the Sale modals because the current modal UI is extremely ugly.
+- User evidence:
+  - Screenshots show native browser inputs/selects/textarea in the Sale item and Campaign modals.
+  - Form controls are cramped, labels are inline-looking, textarea is tiny, and modal footer/header spacing is weak.
+- Constraints / assumptions:
+  - Scope this pass to Sale modal UI only.
+  - Keep existing modal CRUD behavior and backend payloads unchanged.
+  - Use Dashboard styling rather than raw native controls.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read continuity ledger at turn start.
+  - Inspected current Sale modal JSX and global form/modal CSS.
+- Now:
+  - Patch Sale modal classes/structure and scoped CSS for polished form controls, grouped fields, toggles, and footer layout.
+- Next:
+  - Run Dashboard TypeScript/static checks and `/sales` smoke check.
+- Open Questions:
+  - True browser-use visual verification remains unavailable in this session due the previously blocked/missing browser-use callable tooling.
+
+- Current scope progress update (Sale page visual polish):
+- Done:
+  - Reworked `admin_dashboard_telegram_bot/app/(admin)/sales/page.tsx` visual hierarchy:
+    - Added a compact Sale control overview with current/next campaign messaging and KPI strip.
+    - Replaced generic stats cards with denser Sale-specific operational metrics.
+    - Improved Campaign table rows with schedule, limits, notify chips, and cleaner title/meta hierarchy.
+    - Improved Sale item rows with price hierarchy, discount chip, stock progress meter, enabled/mode pills, and cleaner row metadata.
+    - Preserved modal-based create/add flows and row-level hover `...` action menus.
+  - Added Sale-specific CSS in `admin_dashboard_telegram_bot/app/globals.css`, including responsive behavior for the overview/KPI strip.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - `git diff --check -- app/(admin)/sales/page.tsx app/globals.css` passed with only LF/CRLF normalization warnings.
+    - HTTP smoke check for `http://127.0.0.1:3001/sales` returned 200.
+    - React best-practices checklist was reviewed for the TSX pass; no blocker found.
+- Now:
+  - Summarize the Sale UI polish and verification to the user.
+- Next:
+  - If true browser-use tooling becomes available, visually verify the `/sales` layout at desktop/mobile widths.
+- Open Questions:
+  - True browser-use visual verification remains unavailable in this session due the previously blocked/missing browser-use callable tooling.
+
+- Current scope add-on (latest request): polish the Sale page because the current UI still feels ugly.
+- Constraints / assumptions:
+  - Keep the modal-based CRUD flow and row-level hover `...` action menus.
+  - Do not add fake edit/delete actions that the current `/api/admin/sales` backend does not support.
+  - Make the page more compact, scannable, and operational rather than decorative.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read the continuity ledger at turn start.
+  - Inspected the current Sale page implementation and global Dashboard CSS.
+  - Loaded the React best-practices checklist for the TSX/CSS polish pass.
+- Now:
+  - Patch Sale page visual hierarchy, table row presentation, and Sale-specific CSS.
+- Next:
+  - Run Dashboard TypeScript/static checks and an HTTP smoke check for `/sales`.
+- Open Questions:
+  - True browser-use visual verification remains unavailable in this session due the previously blocked/missing browser-use callable tooling.
+
+- Current scope add-on (latest request): upgrade the Sale page from rough inline panels to proper Admin Dashboard UI.
+- User feedback:
+  - "Trang Sale vẫn chưa có UI" after the all-page row action menu pass.
+- Constraints / assumptions:
+  - Focus on visual/UI polish and CRUD ergonomics for `admin_dashboard_telegram_bot/app/(admin)/sales/page.tsx`.
+  - Use modal-based create/add flows to match the CRUD best-practice direction already chosen.
+  - Preserve the existing `/api/admin/sales` behavior and avoid adding unsupported backend actions unless necessary.
+  - Keep row-level actions as hover/focus `...` dropdowns.
+- Done:
+  - Re-read continuity ledger and inspected the current Sale page.
+- Now:
+  - Inspect Sale API capabilities, patch Sale page UI, then run Dashboard TypeScript/static checks.
+- Next:
+  - Summarize the UI changes and any remaining backend CRUD limitations.
+- Open Questions:
+  - Whether full edit/delete Sale campaign/item backend actions should be added after the UI cleanup is separate from this immediate visual fix.
+
+- Current scope progress update (Sale page UI upgrade):
+- Done:
+  - Rebuilt `admin_dashboard_telegram_bot/app/(admin)/sales/page.tsx` around shared Dashboard UI primitives:
+    - `PageHeader`, `StatCard`, `SectionCard`, `DataTable`, `EmptyState`, `StatusPill`, and `RowActionMenu`.
+    - Replaced rough inline `action-panel` create/add panels with real modal dialogs.
+    - Campaign and Sale item rows now use standard tables and hover/focus `...` actions.
+    - Added empty states for no campaign / no Sale item.
+    - Added accessible modal dialog labels (`role="dialog"`, `aria-modal`, `aria-labelledby`).
+  - Kept behavior aligned with current backend capabilities:
+    - Create campaign.
+    - Set campaign status Active/Pause/End.
+    - Add Sale item from existing stock or new stock.
+    - Enable/disable Sale item.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - `git diff --check -- app/(admin)/sales/page.tsx` passed with only LF/CRLF normalization warning.
+    - HTTP smoke check for `http://127.0.0.1:3001/sales` returned 200.
+    - React best-practices checklist reviewed; no blocker found for this focused page rebuild.
+- Now:
+  - Summarize Sale UI fix to the user.
+- Next:
+  - Full edit/delete CRUD for Sale campaign/item can be added later with matching backend actions.
+- Open Questions:
+  - True browser-use visual verification remains unavailable in this session due the previously blocked/missing browser-use callable tooling.
+
+- Current scope add-on (latest request): convert row-level `Hành động` controls on the Products admin page into compact dropdown menus.
+- Constraints / assumptions:
+  - Keep the top-level create buttons as the primary "add" actions.
+  - Move only per-row CRUD actions into dropdowns for Products, Bot folders, and Format templates.
+  - Preserve the modal CRUD flow and existing mutation behavior.
+- Done:
+  - Re-read ledger at turn start and captured the latest request.
+  - Added shared row action dropdown rendering in `admin_dashboard_telegram_bot/app/(admin)/products/page.tsx`.
+  - Converted Folder row actions to a dropdown with `Chỉnh sửa` and `Xóa folder`.
+  - Converted Product row actions to dropdown items for `Chỉnh sửa`, `Ẩn`/`Bỏ ẩn`, `Xóa mềm`, and `Khôi phục` as appropriate.
+  - Converted Format template row actions to a dropdown with `Chỉnh sửa` and `Xóa`.
+  - Added dropdown styling in `admin_dashboard_telegram_bot/app/globals.css` and reduced the action column width.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - Static search confirmed old `product-row-actions` / `action-pill` usages are gone from Products page.
+    - Nested Dashboard `git diff --check` for Products page and CSS passed with only LF/CRLF warnings.
+- Now:
+  - Summarize the CRUD action dropdown cleanup to the user.
+- Next:
+  - If visual browser automation becomes available, verify `/products` dropdown opening/closing in the in-app browser.
+- Open Questions:
+  - True browser-use visual verification remains unavailable in this session due the previously blocked/missing browser-use callable tooling.
+
+- Current scope add-on (latest request): apply the compact hover-only `...` row action dropdown pattern across all Admin Dashboard pages.
+- Constraints / assumptions:
+  - Target row-level CRUD/action controls in Admin Dashboard tables/lists.
+  - Keep page-level workflow buttons visible when they start primary actions such as create, import, refresh, or bulk operations.
+  - Reuse a shared Dashboard UI component rather than duplicating per-page dropdown logic.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Continuity ledger re-read after context compaction and latest request confirmed.
+- Now:
+  - Verify the already-patched shared action menu and converted pages, then close out with tests/check summary.
+- Next:
+  - Report which pages were covered and note any browser-use limitation.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): apply the hover-only `...` row action dropdown pattern across all Admin Dashboard pages.
+- Constraints / assumptions:
+  - Target row-level CRUD/action controls in Admin Dashboard tables/lists, not primary page-level buttons.
+  - Reuse the Products page action menu pattern where possible.
+  - Preserve existing behavior and avoid broad redesigns beyond the action surface.
+  - Keep keyboard accessibility and mobile/touch fallback.
+- Done:
+  - Re-read continuity ledger fully and captured the latest request.
+- Now:
+  - Inventory Admin Dashboard pages for row-level action buttons, extract/reuse a common action dropdown, then patch pages.
+- Next:
+  - Run TypeScript/static checks and summarize covered pages.
+- Open Questions:
+  - Some non-CRUD command buttons may remain visible if they are primary workflow actions rather than row menus.
+
+- Current scope add-on (latest request): make row action dropdown triggers appear only on row hover/focus, with visible text `...`.
+- Constraints / assumptions:
+  - Keep dropdown action menu behavior from the previous batch.
+  - Product, Folder, and Format table rows should look cleaner by default.
+  - Maintain keyboard accessibility via focus visibility and keep touch/mobile usable.
+- Done:
+  - Re-read ledger at turn start and captured the latest request.
+  - Updated Products page row action trigger text from `Hành động` to `...`, while keeping `aria-label="Mở menu hành động"`.
+  - Action menu triggers are now hidden by default and appear on table-row hover, keyboard focus, or while a menu is open.
+  - Added a touch/mobile fallback so action triggers stay visible on devices without hover.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - Nested Dashboard `git diff --check` for Products page and CSS passed with only LF/CRLF warnings.
+    - Static text check confirmed the `...` trigger and hover/focus CSS are present.
+- Now:
+  - Summarize the hover-only `...` action trigger cleanup to the user.
+- Next:
+  - If browser-use tooling becomes available, visually verify the hover behavior on `/products`.
+- Open Questions:
+  - True browser-use visual verification remains unavailable in this session due the previously blocked/missing browser-use callable tooling.
+
 Current scope add-on (latest request): start implementing the recommended next steps one by one.
 Constraints / assumptions for this implementation batch:
   - Follow the priority order from `PROJECT_AUDIT_REPORT.md`.
@@ -3173,6 +3596,362 @@ Notes:
 - Open Questions:
   - None.
 
+- Current scope add-on (latest request): convert row-level `Hành động` buttons in Products page cards into dropdown menus.
+- User expectation:
+  - Best-practice CRUD tables should not show several inline action buttons per row; use a compact dropdown action menu.
+- Constraints / assumptions:
+  - Scope to Products page cards currently under `/products`.
+  - Convert row actions for product rows, Bot folder rows, and format-template rows.
+  - Keep existing handlers and confirmation modals unchanged.
+  - Preserve topbar create buttons and portal modal behavior.
+- Done:
+  - Latest row-action dropdown request captured in the continuity ledger.
+- Now:
+  - Inspect existing styles/patterns, add a compact dropdown menu style if needed, and replace inline row buttons.
+- Next:
+  - Run Dashboard TypeScript and static checks.
+- Open Questions:
+  - None.
+
+- Current scope progress update (remove redundant Products create buttons):
+- Done:
+  - Removed duplicate `Thêm folder` button from the Folder card header.
+  - Removed duplicate `Thêm format` button from the Format templates card header.
+  - Kept topbar actions as the single create-action surface:
+    - `Thêm sản phẩm`
+    - `Thêm folder`
+    - `Thêm format`
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - Static search confirms the remaining visible create-entry buttons are in the topbar, while modal titles/submit buttons remain inside modals.
+    - Nested Dashboard `git diff --check` passed with only the existing LF/CRLF warning.
+- Now:
+  - Summarize the cleanup.
+- Next:
+  - User can reload `/products` and confirm the section headers feel less noisy.
+- Open Questions:
+  - None.
+
+- Current scope progress update (Products modal portal fix):
+- Done:
+  - Patched `admin_dashboard_telegram_bot/app/(admin)/products/page.tsx` to import `createPortal`.
+  - Added local `renderModal(...)` helper that mounts modal overlays into `document.body`.
+  - Routed all Products modal overlays through `renderModal(...)`:
+    - create product
+    - create folder
+    - create format template
+    - edit product
+    - edit folder
+    - edit format template
+    - delete folder
+    - delete product
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - Static search confirms all Products modal overlays now use `renderModal(...)`.
+    - Nested Dashboard `git diff --check` passed with only the existing LF/CRLF warning.
+- Now:
+  - Tell the user to reload `/products`; modal should now render outside card/list containers.
+- Next:
+  - If visual issue persists after reload, inspect CSS stacking/transform ancestors next.
+- Open Questions:
+  - Browser Use visual verification remains unavailable in this turn because the tool quota was previously blocked.
+
+- Current scope add-on (latest request): remove redundant `Thêm ...` buttons on Products page after modal CRUD cleanup.
+- User observation:
+  - Multiple `Thêm ...` buttons feel redundant now that create actions are modal-driven.
+- Constraints / assumptions:
+  - Keep the topbar as the single action surface for create actions.
+  - Remove duplicate create buttons from card/section headers only.
+  - Do not change modal logic, API behavior, or CRUD handlers.
+- Done:
+  - Latest redundant-button request captured in the continuity ledger.
+- Now:
+  - Remove duplicate `Thêm folder` and `Thêm format` buttons from section headers.
+- Next:
+  - Run Dashboard TypeScript and static checks.
+- Open Questions:
+  - None.
+
+- Current scope progress update (Products CRUD modal UI):
+- Done:
+  - Converted Products page create flows from inline panels to modal dialogs:
+    - `Thêm sản phẩm`
+    - `Thêm folder`
+    - `Thêm format`
+  - Top/page actions now open modals directly instead of toggling inline expanded panels.
+  - Create modals reuse existing handlers/API behavior and include disabled saving states plus cancel buttons.
+  - Static verification completed:
+    - Dashboard TypeScript check passed with `.\node_modules\.bin\tsc.cmd --noEmit -p .\tsconfig.json`.
+    - Products page no longer contains `action-panel`.
+    - Products nested-repo `git diff --check` passed with only the existing LF/CRLF warning.
+  - Browser Use verification was attempted but blocked by the in-app browser tool quota/usage limit, so visual automation could not be completed in this turn.
+- Now:
+  - Summarize Products CRUD modal conversion and the Browser Use limitation.
+- Next:
+  - When Browser Use quota is available, reload `/products` and verify the three create buttons open/close modals without creating records.
+- Open Questions:
+  - Whether the user wants the same modal-create pass extended to Website Dashboard products/stock/license CRUD is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): Products CRUD modal currently appears constrained inside the card; modal should render at the app/body layer.
+- User expectation:
+  - Modal overlay must display outside the card/list container, not inside the card where the create button lives.
+- Constraints / assumptions:
+  - Fix Products page modal placement without changing save/create/delete behavior.
+  - Use a React portal to mount modal overlays into `document.body`.
+  - Keep existing modal CSS/classes and saving states.
+- Done:
+  - Latest modal-placement issue captured in the continuity ledger.
+- Now:
+  - Patch Products page to render create/edit/delete modals through a portal.
+- Next:
+  - Run Dashboard TypeScript and attempt Browser Use verification if the browser tool quota allows.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): make Admin Dashboard CRUD UI compact by using modal dialogs, starting from the current Products page.
+- User expectation:
+  - CRUD best practice for the dashboard should be tidy; create/edit/delete actions should open modals instead of expanding long inline forms in the list page.
+- Constraints / assumptions:
+  - Preserve existing product/folder/template API behavior, validation, and audit flow.
+  - Keep edits surgical to the Products page unless a shared UI helper is clearly needed.
+  - Verify with Dashboard TypeScript and Browser Use on `http://127.0.0.1:3001/products`.
+- Done:
+  - Latest UI/modal request captured in the continuity ledger.
+- Now:
+  - Convert Products create, Bot folder create, and format-template create panels from inline forms into modals.
+- Next:
+  - Run TypeScript verification and interactively check the modals in the in-app browser without creating real records.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): make Admin Dashboard CRUD UI compact by using modals instead of inline create panels, starting from the current Products page.
+- Constraints / assumptions:
+  - User is reacting to the `/products` UI after Browser Use testing; prioritize Products CRUD create panels that currently expand inline.
+  - Keep server-side mutation/validation work from the previous batch unchanged.
+  - Do not mutate real Supabase data while testing UI.
+- Done:
+  - Latest request captured in the continuity ledger.
+- Now:
+  - Convert Products create/folder/template create UI from inline panels into modal dialogs, then verify with TypeScript and Browser Use.
+- Next:
+  - Consider applying the same modal pattern to other CRUD-heavy create forms such as Licenses once Products is corrected.
+- Open Questions:
+  - Whether every non-Products create form should be modalized in this same batch is **UNCONFIRMED**; current implementation starts with the visible Products issue.
+
+- Current scope add-on (latest request): use `@browser-use` to test all recent Admin Dashboard CRUD changes.
+- Constraints / assumptions:
+  - Use the Browser Use plugin through the Node REPL browser runtime.
+  - Do not inspect or type secrets; authenticated click-through requires an existing admin session or user-provided credentials/explicit consent.
+  - Test as much as possible unauthenticated first: server health, route rendering, login guard, console/runtime errors, and DOM presence of updated controls.
+- Done:
+  - Latest request captured in the continuity ledger.
+- Now:
+  - Run Browser Use route and UI smoke tests against `http://127.0.0.1:3001`.
+- Next:
+  - If the in-app browser is not logged in as admin, report which tests are blocked and what user input/session is needed.
+- Open Questions:
+  - Whether the in-app browser currently has an authenticated admin session is **UNCONFIRMED**.
+
+- Current scope progress update (`@browser-use` CRUD UI test):
+- Done:
+  - Loaded the full Browser Use skill and initialized the in-app browser runtime with `backend: "iab"`.
+  - Opened local Dashboard at `http://127.0.0.1:3001`.
+  - Browser route smoke test passed with no loading hang and no console errors for:
+    - `/products`
+    - `/stock`
+    - `/direct-orders`
+    - `/deposits`
+    - `/withdrawals`
+    - `/usdt`
+    - `/licenses`
+    - `/settings`
+  - Products UI interaction test:
+    - opened the "Thêm sản phẩm" panel.
+    - verified form renders with product fields, submit button, and cancel button.
+    - screenshot was displayed through Browser Use.
+  - Folder UI interaction test:
+    - opened the "Thêm folder" panel.
+    - verified folder name/position inputs and submit button render.
+  - Format template UI interaction test:
+    - opened the "Thêm format" panel.
+    - verified format name/pattern inputs render.
+  - Data-dependent destructive/financial confirm-modal click-through was partially blocked by current database state:
+    - `/direct-orders`, `/deposits`, `/withdrawals`, and `/usdt` had no actionable pending rows in the Browser Use session.
+    - `/stock` had no selectable product, so custom-check delete controls stayed disabled.
+    - `/licenses` showed create controls but no listed rows for delete/revoke/reset modal testing.
+  - Confirm-action buttons that would mutate real Supabase data were not clicked.
+- Now:
+  - Report Browser Use results and the data-dependent test gap.
+- Next:
+  - Full end-to-end mutation testing needs either seeded test rows or user confirmation to create temporary test records in the connected Supabase project.
+- Open Questions:
+  - Whether the user wants me to create temporary test records for full modal/CRUD mutation tests is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): review the full Admin Dashboard UI described by `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md` and make CRUD flows follow best practice.
+- Constraints / assumptions:
+  - Interpret "CRUD best practice" as: server-side mutations for privileged writes, validation before writes, explicit confirmation for destructive/financial actions, loading/disabled states, clear success/error feedback, audit logging where supported, and predictable list refresh after mutation.
+  - Keep changes surgical and focused on the Admin Dashboard UI/API surface.
+  - Preserve unrelated dirty worktree changes and do not inspect secrets.
+  - Use browser verification if the local tooling allows it; otherwise use TypeScript/static checks and route checks as fallback.
+- Done:
+  - Latest request captured in the continuity ledger.
+- Now:
+  - Audit current Admin Dashboard CRUD surfaces, then patch the highest-risk gaps first.
+- Next:
+  - Verify TypeScript and search for remaining raw browser confirmations/direct browser writes in CRUD pages.
+- Open Questions:
+  - None.
+
+- Current scope progress update (Admin Dashboard CRUD best-practice pass):
+- Done:
+  - Added shared `ConfirmDialog` in `admin_dashboard_telegram_bot/components/AdminUi.tsx`.
+  - Finished Products CRUD hardening:
+    - create/update products now use server API actions.
+    - create/update folders now use server API actions.
+    - create/update/delete format templates now use server API actions.
+    - create/edit forms now disable submit/cancel while saving.
+    - removed unused client-side position-shift type.
+  - Replaced raw browser confirmations with Dashboard modal confirmations for:
+    - Direct Orders approve/mark failed.
+    - Stock custom-check group delete.
+    - Finance deposit/withdrawal/USDT confirm/cancel.
+    - License extension delete, key revoke, key bind reset, single activation reset.
+  - Updated `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md` with a CRUD best-practice section and current batch notes.
+  - React best-practices checklist was reviewed after TSX edits; no extra refactor was needed beyond typed modal state, semantic buttons, disabled busy states, and stable CRUD flow.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - Search found `NO_RAW_CONFIRM` in Admin CRUD TSX pages.
+    - Search found `NO_BROWSER_PRODUCT_MUTATIONS` in Products page.
+    - Nested Dashboard and root `git diff --check` passed with only existing LF/CRLF warnings.
+    - Local Next dev server required escalation because sandboxed start hit `spawn EPERM`; after approval it served Dashboard on `http://127.0.0.1:3001`.
+    - HTTP route smoke check returned 200 for `/login`, `/products`, `/stock`, `/direct-orders`, `/deposits`, `/withdrawals`, `/usdt`, and `/licenses`.
+    - In-app browser opened `http://127.0.0.1:3001/products`; unauthenticated routes redirect to login, while route-level render checks succeeded where session state allowed.
+- Now:
+  - Summarize changes, verification, and the running local URL to the user.
+- Next:
+  - Authenticated click testing can be done manually from `http://127.0.0.1:3001` with an admin session, especially opening confirm modals on Direct Orders, Finance, Stock custom-check, and Licenses.
+- Open Questions:
+  - Authenticated visual click-through of every modal was not completed because the in-app browser session was not logged in as admin.
+
+- Current scope add-on (latest request): review the full Admin Dashboard UI feature surface and bring CRUD flows toward best practice.
+- User request:
+  - Use `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md` as the feature inventory for the Project UI.
+  - Ensure all CRUD flows follow best practices.
+- Constraints / assumptions:
+  - Treat this as an implementation/audit batch, not just advice, unless a blocker appears.
+  - Scope is `admin_dashboard_telegram_bot` UI/API CRUD surfaces; avoid touching Telegram Bot runtime unless needed for Dashboard contracts.
+  - Preserve unrelated dirty worktree changes.
+  - Do not inspect or print secrets.
+  - Browser Use skill guidance was read; use in-app browser verification if the runtime is available, otherwise document fallback checks.
+- Done:
+  - Latest Dashboard CRUD best-practice request captured in the continuity ledger.
+  - Read `ADMIN_DASHBOARD_TELEGRAM_BOT_FEATURES.md`.
+- Now:
+  - Inventory Dashboard routes/components/APIs and identify inconsistent CRUD patterns.
+- Next:
+  - Patch focused reusable CRUD guardrails and highest-risk pages, then run TypeScript/build and route/UI verification.
+- Open Questions:
+  - Exact "best practice" checklist is inferred as: server-side mutations, validation, explicit confirmations, loading/disabled states, clear errors/success, audit logging where supported, and predictable list refresh after mutation.
+
+- Current scope progress update (Binance Pay amount aligned with BEP20):
+- Done:
+  - Patched `handlers/shop.py` so Binance Pay amount now renders the same `exact_amount_block` as BEP20 wallet transfer.
+  - Removed the now-unused separate Binance Pay base amount calculation/render block.
+  - Updated footer wording to say Binance Pay uses the same amount plus exact note for reconciliation.
+  - Kept `Listed USDT price` removed from BEP20.
+  - Verification completed:
+    - Python AST parse passed for `handlers/shop.py`, `helpers/binance_client.py`, `config.py`, and `run.py`.
+    - `python -B -c "import run"` passed.
+    - Render smoke test passed:
+      - Binance Pay and BEP20 sections both appear.
+      - Both sections show the same exact suffixed amount.
+      - `Listed USDT price` is absent.
+    - `git diff --check -- handlers/shop.py CONTINUITY.md` passed with only LF/CRLF normalization warnings.
+- Now:
+  - Summarize the exact behavior change and restart/new-message requirement to the user.
+- Next:
+  - Restart the Bot and create a brand-new Binance payment message; old already-sent messages will not change.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): add a dual Binance payment presentation like external examples, with Binance Pay and BEP20 wallet options, and use Telegram code blocks for safer copy.
+- User evidence / desired UX:
+  - Example payment message shows `CÁCH 1: BINANCE PAY` with Binance ID, amount, and note/code in separate copyable blocks.
+  - Example payment message shows `CÁCH 2: CHUYỂN VÍ (BEP20)` with wallet address and exact amount in copyable blocks.
+  - User believes fenced code blocks (` ``` ` style) copy more reliably than previous inline/code-entity formatting.
+- Constraints / assumptions:
+  - Do not print or inspect API secrets.
+  - Need inspect current Binance on-chain matching before promising Binance Pay auto-delivery, because Binance Pay/internal transfer may not be matched by the existing on-chain deposit-history logic.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Latest dual-payment UX request captured in the continuity ledger.
+- Now:
+  - Inspect `helpers/binance_client.py`, `handlers/shop.py`, and settings/docs to determine whether Binance Pay ID/code can be added as display-only or requires new settlement logic.
+- Next:
+  - Patch the Binance payment message and settings with the smallest safe change, then run syntax/import/smoke checks.
+- Open Questions:
+  - Whether Binance Pay transfers appear in the currently polled Binance deposit history is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): diagnose production Binance API error `-1021 Timestamp for this request was 1000ms ahead of the server's time` in the Binance direct checker.
+- User evidence:
+  - `sepay_checker` logs repeated `Skip Binance direct checker: binance_http_400:{"code":-1021,"msg":"Timestamp for this request was 1000ms ahead of the server's time."}`.
+- Constraints / assumptions:
+  - Treat this as production stability; explain the root cause and patch local Binance timestamp handling if code currently signs with raw local clock.
+  - Do not print or inspect Binance API secrets.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+- Now:
+  - Inspect Binance client/checker timestamp signing path.
+- Next:
+  - Add server-time offset handling or clear deployment remediation, then verify syntax/import.
+- Open Questions:
+  - Whether the production Windows/server clock is NTP-synced is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): list the main Telegram Bot purchase flow from product/category selection through payment type, quantity, bank/payment channel, and fulfillment.
+- Constraints / assumptions:
+  - Advisory/documentation response only; no code change requested.
+  - Base the flow on current repository handlers/keyboards/templates, not memory alone.
+  - Keep response Vietnamese-first and practical for validating UX/template coverage.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Inspected current flow in `handlers/shop.py`, `keyboards/inline.py`, `run.py`, and `TELEGRAM_BOT_FEATURES.md`.
+  - Confirmed key callback chain:
+    - catalog: `shop`, `shopfolder_*`, `sale_*`, `buy_*`, `salebuy_*`
+    - payment method: `pay_vnd_*`, `pay_usdt_*`, `salepay_vnd_*`, `salepay_usdt_*`
+    - quantity: `buyqty_*`, `buyqtymanual_*`, `buyqtyquick_*`, and Sale equivalents
+    - direct channel: `directpay_vietqr_*`, `directpay_binance_*`, `saledirectpay_vietqr_*`, `saledirectpay_binance_*`
+    - status: `directstatus:*`
+- Now:
+  - Summarize the main flow and important branch variants.
+- Next:
+  - User may choose a flow segment to simplify, template, or turn into a diagram/doc.
+- Open Questions:
+  - Whether user wants this converted into a formal diagram/doc file is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): diagnose and fix the extra icon shown at the beginning of `shop_intro` after adding inline custom emoji placeholders.
+- User evidence:
+  - Dashboard `shop_intro` body starts with `{emoji:...}`.
+  - Telegram output shows an additional plain/icon prefix before the custom emoji at the start of the message.
+- Constraints / assumptions:
+  - Preserve inline `{emoji:...}` support.
+  - Template body should control per-line icons; no hidden hardcoded prefix should be added when inline custom emoji is used.
+  - Preserve backward compatibility for templates that still intentionally use the top-level `custom_emoji_id` or `fallback_emoji` fields.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Diagnosed cause: `helpers/shop_catalog.py` passes hardcoded `fallback_emoji="🛍"` for `shop_intro`, and `helpers/bot_messages.py` was applying that code fallback even when a Dashboard template exists.
+  - Patched `helpers/bot_messages.py` so code-level `fallback_emoji` is only used when the template is missing/disabled; existing template rows now use only their own `custom_emoji_id`, `fallback_emoji`, and `body_text` inline `{emoji:...}` placeholders.
+  - Verification completed:
+    - Python AST parse passed for `helpers/bot_messages.py`.
+    - Smoke test confirmed a `shop_intro` template body starting with `{emoji:...}` renders as one custom emoji placeholder without prepending the hardcoded `🛍`.
+    - `git diff --check` passed for touched files with only expected line-ending/profile warnings.
+- Now:
+  - Summarize cause, fix, and restart requirement.
+- Next:
+  - Operator redeploys/restarts the Bot so production picks up the renderer fix.
+- Open Questions:
+  - None.
+
 - Current scope add-on (latest request): implement all proposed Admin Dashboard and Telegram Bot improvements in one batch, then report only after the batch is complete.
 - User requirements:
   - Do not stop at planning; implement the proposed Admin Dashboard and Telegram Bot improvements together.
@@ -3727,3 +4506,663 @@ Notes:
   - Deploy/restart production bot; if default certifi context still fails, set `PAYMENT_RELAY_CA_BUNDLE` to the trusted internal CA PEM or temporarily set `PAYMENT_RELAY_SSL_NO_VERIFY=true`.
 - Open Questions:
   - Whether production has a corporate/VPS TLS interception CA that should be trusted via a custom CA bundle is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): relay notify still fails with SSL certificate verify error after previous patch.
+- User evidence:
+  - New screenshot still shows old log format `Relay notify exception: Cannot connect to host api.telegram.org:443 ssl:True [SSLCertVerificationError ... self-signed certificate in certificate chain]`.
+- Constraints / assumptions:
+  - The old log format suggests production may not be running the patched `sepay_checker.py`, but make code more foolproof anyway.
+  - Implement a targeted automatic SSL no-verify retry only for the payment relay notification path and only after a certificate verification failure.
+  - Keep long-term preferred fix as custom CA via `PAYMENT_RELAY_CA_BUNDLE`; auto fallback is a pragmatic production-stability fallback for this non-critical notification copy.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Latest "still failing" relay SSL report captured in the continuity ledger.
+- Now:
+  - Add certificate-error detection and one-time automatic no-verify retry to `send_payment_relay_notification`.
+- Next:
+  - Verify syntax/import and provide exact deployment/restart check so production runs the patched file.
+- Open Questions:
+  - Whether the production process was restarted after copying the previous patch is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): review and optimize the Telegram Bot end-to-end flow/performance/UX, especially slow button clicks, and add Dashboard-editable Bot messages with Telegram custom emoji ID support.
+- User observations:
+  - Inline button clicks feel slow.
+  - Bot message copy should be editable from Dashboard instead of hardcoded in source.
+  - Bot messages should support Telegram custom emoji IDs for a more polished UI, not only plain text emoji.
+- Constraints / assumptions:
+  - Implement practical improvements in this repository rather than only advisory review.
+  - Preserve unrelated dirty worktree changes.
+  - Prior custom emoji product button support already exists; this request extends the idea to configurable Bot message text/content.
+  - New SQL must be created as focused split SQL and mirrored into `supabase_schema_all_in_one.sql` when schema is needed.
+  - Do not expose or print secrets.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Latest Bot performance/message-template request captured in the continuity ledger.
+- Now:
+  - Inspect Telegram callback handlers, message send/edit patterns, existing Dashboard settings patterns, and schema to identify low-risk performance fixes and the best message-template design.
+- Next:
+  - Implement fast callback acknowledgement/message send resilience, configurable message templates/RPC/schema, Dashboard editor, and Bot renderer helpers, then run Python/TypeScript/static checks.
+- Open Questions:
+  - Exact list of Bot messages to make editable in the first batch is **UNCONFIRMED**; implement a high-value core template set first and leave extension path documented.
+
+- Current scope update (production Supabase network error during Bot performance work):
+- User evidence:
+  - `httpx.ReadError: [WinError 10035] A non-blocking socket operation could not be completed immediately`.
+  - Stack trace comes from `get_active_sale_products()` inside `build_shop_top_level_view()` while handling `handle_shop_text`.
+  - The `asyncio.gather(...)` call lets a transient Supabase/PostgREST network failure abort the whole Shop handler.
+- Constraints / assumptions:
+  - The Bot should keep responding even if optional Sale/catalog side queries temporarily fail.
+  - Preserve the callback/message template work already in progress.
+  - Fix should add retry, stale-cache fallback, and safe catalog rendering instead of hiding business logic errors everywhere.
+- Done:
+  - Latest production error captured in the continuity ledger.
+- Now:
+  - Patch Supabase thread calls with transient retry and make Shop/Sale catalog builders tolerate failed optional queries.
+- Next:
+  - Run AST/import checks and Dashboard TypeScript checks after the resilience patch.
+- Open Questions:
+  - Whether production Supabase/network has broader intermittent failures is **UNCONFIRMED**; patch will degrade gracefully and log warnings.
+
+- Current scope completion update (Supabase network resilience + Bot performance/message templates):
+- Done:
+  - Added opt-in transient retry support for Supabase/PostgREST read calls in `database/supabase_db.py`.
+    - Retry is controlled by `SUPABASE_NETWORK_RETRY_ATTEMPTS` and `SUPABASE_NETWORK_RETRY_DELAY`.
+    - Reads for products, Sale catalog, folders, settings, and Bot message templates use retry where safe.
+    - Mutating writes are not globally retried to avoid duplicate inserts/orders.
+  - Added stale-cache/empty fallback behavior for Shop-critical reads:
+    - product catalog returns stale cache if available after transient network failure.
+    - Sale catalog returns stale cache or empty Sale list instead of breaking Shop.
+    - folder list returns stale cache or empty folders.
+    - settings/template reads return cached/default/source fallback.
+  - `helpers/shop_catalog.py` now uses `asyncio.gather(..., return_exceptions=True)` and per-dependency fallbacks, so one failing optional query cannot abort the whole Shop/Sale renderer.
+  - Added Supabase retry env examples to `.env.example` and deployment docs.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - `.\venv\Scripts\python.exe -c "import run; print('import run ok')"` passed.
+    - No-write AST parse passed for changed Bot/runtime files.
+    - Custom emoji message render smoke test passed.
+    - Catalog fallback simulation passed with Sale dependency intentionally failing.
+    - Transient network classifier test passed for the pasted `WinError 10035` shape.
+    - Root and nested Dashboard `git diff --check` passed with only existing LF/CRLF normalization warnings.
+    - `py_compile` was attempted but Windows denied writing `.pyc` in `database\__pycache__`; no-write AST parse was used as the valid syntax check.
+- Now:
+  - Summarize implemented fixes and deployment steps to the user.
+- Next:
+  - Deploy/restart production Bot and Dashboard after applying `supabase_schema_all_in_one.sql`; monitor logs for remaining Supabase/PostgREST transient errors.
+- Open Questions:
+  - Whether the production host has recurring network/socket instability beyond transient Supabase/PostgREST reads remains **UNCONFIRMED**.
+
+- Current scope add-on (latest request): add missing Dashboard-editable Bot templates for remaining Shop/checkout messages shown in screenshots.
+- User evidence:
+  - Product payment/options message is still hardcoded: product name, price, stock, and "Chọn cách thanh toán".
+  - Quantity prompt message is still hardcoded: payment method, product, current balance, max quantity, and "Chọn nhanh số lượng...".
+  - Shop intro may still show fallback/plain emoji if SQL/template has not been applied, but the code path already has `shop_intro`.
+- Constraints / assumptions:
+  - Add template keys in `bot_message_templates` split SQL and mirror them into `supabase_schema_all_in_one.sql`.
+  - Wire Bot runtime to render these messages through `helpers.bot_messages`.
+  - Preserve existing variables in message copy so Dashboard admins can edit wording without code deploy.
+  - Keep business values dynamic via placeholders.
+- Done:
+  - Latest missing-template request captured in the continuity ledger.
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Located the hardcoded Shop/checkout messages in `handlers/shop.py`: product/Sale payment options, quantity prompt/ForceReply, and direct payment options.
+  - Patched `handlers/shop.py` so those flows render through `bot_message_templates` with source-code fallback if templates are missing or disabled.
+  - Added new template seeds to `supabase_schema_bot_message_templates.sql` and mirrored them into `supabase_schema_all_in_one.sql`.
+  - Updated Bot/Dashboard/deployment docs to mention the new Shop/checkout template keys.
+  - Verification completed:
+    - Python AST parse passed for `handlers/shop.py` and `helpers/bot_messages.py`.
+    - `.\venv\Scripts\python.exe -c "import run; print('import run ok')"` passed.
+    - Dashboard TypeScript check passed.
+    - SQL text check confirmed the new template keys exist in both split SQL and all-in-one SQL.
+    - Template fallback smoke test passed for quantity prompt and product payment options.
+    - Root and nested Dashboard `git diff --check` passed with only existing LF/CRLF normalization warnings.
+- Now:
+  - Summarize the new template coverage and deployment/apply-SQL steps to the user.
+- Next:
+  - Operator applies `supabase_schema_all_in_one.sql` and restarts/redeploys Bot/Dashboard so new templates appear in Dashboard and runtime.
+- Open Questions:
+  - Full list of every Bot message to template remains **UNCONFIRMED**; implement the messages visible in screenshots plus adjacent checkout text first.
+
+- Current scope add-on (latest request): support custom emoji icons inside Bot message template body lines, not only one prefix per template.
+- User evidence:
+  - Dashboard Bot Messages editor currently has a single `custom_emoji_id` field that renders one custom emoji prefix before the whole message.
+  - User wants to add custom emoji icons to individual lines in a template body, such as each line in `direct_payment_options`.
+- Constraints / assumptions:
+  - Preserve existing single-prefix `custom_emoji_id` behavior for backward compatibility.
+  - Add an inline placeholder syntax in `body_text` so admins can put custom emoji anywhere in the message without schema changes.
+  - Dashboard should document the inline syntax near the editor.
+  - Bot renderer must convert inline placeholders into Telegram `MessageEntity.CUSTOM_EMOJI`.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Implemented inline custom emoji placeholders in `helpers/bot_messages.py`:
+    - `{emoji:TELEGRAM_CUSTOM_EMOJI_ID}`
+    - `{custom_emoji:TELEGRAM_CUSTOM_EMOJI_ID}`
+    - Existing top-level `custom_emoji_id` prefix behavior remains supported.
+  - Inline placeholders are protected before normal `{variable}` rendering, then converted to Telegram `MessageEntity.CUSTOM_EMOJI` with UTF-16-safe offsets.
+  - Updated Dashboard Bot Messages editor help text/placeholders to show inline emoji usage.
+  - Updated Bot/Dashboard/deployment docs with the inline custom emoji syntax.
+  - Verification completed:
+    - Python inline custom emoji render smoke test passed.
+    - Python AST parse passed for `helpers/bot_messages.py`.
+    - Dashboard TypeScript check passed.
+    - Root and nested Dashboard `git diff --check` passed with only expected line-ending/profile warnings where applicable.
+- Now:
+  - Summarize how to use inline custom emoji placeholders in Bot message templates.
+- Next:
+  - Operator redeploys/restarts Bot and Dashboard so the renderer/editor updates are live.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): diagnose and fix Binance direct checker API error `binance_http_400` code `-1021` saying the request timestamp was 1000ms ahead of Binance server time.
+- User evidence:
+  - `sepay_checker` logs skip Binance direct checker warnings at `2026-04-27 20:32:44` and `20:33:16`.
+  - Binance response body: `{"code":-1021,"msg":"Timestamp for this request was 1000ms ahead of the server's time."}`.
+- Constraints / assumptions:
+  - Do not inspect or print Binance API secrets.
+  - Fix signed Binance request timestamp handling in code and still recommend production host time sync.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Diagnosed root cause: `helpers/binance_client.py` signed Binance requests with raw local `time.time()` timestamp, so a production clock ahead of Binance by more than roughly 1000ms can trigger code `-1021`.
+  - Added Binance server-time offset handling in `helpers/binance_client.py`:
+    - fetches `/api/v3/time`, computes `serverTime - local midpoint`, and caches the offset.
+    - applies the offset to signed request timestamps.
+    - supports configurable `BINANCE_RECV_WINDOW_MS` with safe clamping.
+    - retries once with a forced time-offset refresh when Binance returns timestamp error `-1021`.
+  - Updated `.env.example` with `BINANCE_RECV_WINDOW_MS=10000` and notes that production Windows/NTP time sync is still required.
+  - Verification completed:
+    - Python AST parse passed for `helpers/binance_client.py`.
+    - Timestamp-error classifier smoke test passed.
+    - `git diff --check` passed for touched files with only existing line-ending/profile warnings.
+  - Follow-up code inspection confirmed:
+    - `helpers/binance_client.py` contains `/api/v3/time` offset sync, `BINANCE_RECV_WINDOW_MS`, offset-adjusted signed timestamps, and retry handling for `-1021`.
+    - `.env.example` documents `BINANCE_RECV_WINDOW_MS=10000`.
+    - `rg` remains blocked by WindowsApps access denied in this Codex runtime, so PowerShell `Select-String` was used for this inspection.
+- Now:
+  - Explain the cause, what was patched, and production actions to the user.
+- Next:
+  - Deploy/restart the production Bot, ensure Windows Time/NTP is synced, and monitor `sepay_checker` for any remaining Binance `-1021` warnings.
+- Open Questions:
+  - Whether the production Windows/server clock is NTP-synced is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): interpret new Binance server-time offset warnings after the `-1021` timestamp fix.
+- User evidence:
+  - `2026-04-27 20:39:27,413 - helpers.binance_client - WARNING - Binance server time offset detected: -10642ms`
+  - `2026-04-27 20:44:46,808 - helpers.binance_client - WARNING - Binance server time offset detected: -10644ms`
+  - SePay checker starts normally between those warnings.
+- Constraints / assumptions:
+  - Explain operational meaning first; do not change code unless a new code issue is identified.
+  - Do not inspect or print secrets.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Interpreted offset `-10642ms`/`-10644ms` as local production clock being about 10.6 seconds ahead of Binance server time.
+  - Confirmed this warning means the new offset-sync code is active and compensating, but the production host clock still needs NTP/Windows Time correction.
+- Now:
+  - Tell the user the warning is expected with the patched code when the host clock is badly skewed, and provide concise Windows/server time-sync actions.
+- Next:
+  - Operator should sync production host clock, restart Bot if needed, and expect offset warning to shrink below ~500ms or disappear.
+- Open Questions:
+  - Whether the production clock drift is caused by disabled Windows Time, VPS/hypervisor drift, or container/VM host time is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): review proposed main checkout flow rules for Direct/Hybrid payment modes split by Vietnamese/English language and suggest best practices before implementation.
+- User proposal:
+  - Direct mode should not show an extra Bank/Binance selection step.
+  - Direct + Vietnamese should always use VietQR/bank only.
+  - Direct + English should always use Binance only.
+  - Hybrid + Vietnamese should offer Wallet or VietQR.
+  - Hybrid + English should offer Wallet or Binance.
+- Constraints / assumptions:
+  - Advisory/product-flow review only for this turn unless user asks to implement.
+  - Keep payment choices simple and language-aware, but avoid hardcoding business policy in scattered handler branches.
+  - Preserve existing wallet/direct-order stock/payment safety requirements when later implementing.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Captured the proposed payment-mode matrix and implementation concerns in the ledger.
+- Now:
+  - Provide a concise best-practice checkout matrix and UX/engineering recommendations.
+- Next:
+  - If approved, implement a centralized payment policy resolver and update Bot/Dashboard settings/templates accordingly.
+- Open Questions:
+  - Exact current setting key/enum names for Direct/Hybrid in code are **UNCONFIRMED** until implementation inspection.
+
+- Current scope add-on (latest request): implement approved language-aware Direct/Hybrid checkout flow and move post-create payment buttons onto the QR/payment message.
+- User requirements:
+  - Direct mode:
+    - Vietnamese users should go directly to VietQR/bank payment without a Bank/Binance choice step.
+    - English users should go directly to Binance payment without a Bank/Binance choice step.
+  - Hybrid mode:
+    - Vietnamese users should choose between Wallet and VietQR.
+    - English users should choose between Wallet and Binance.
+  - QR/payment result UX:
+    - The extra text message above the QR currently has buttons; move those buttons down onto the QR/payment info message so the top extra message is no longer needed.
+- Constraints / assumptions:
+  - Implement in code this turn.
+  - Preserve stock/order safety and existing wallet/direct-order fulfillment semantics.
+  - Avoid scattered hardcoded branches where possible; prefer a centralized resolver/policy helper.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Re-read `CONTINUITY.md` in full for this turn.
+  - Captured the approved implementation scope and QR button-placement requirement.
+  - Inspected checkout/payment handlers, payment-mode setting, QR send paths, callback routing, and keyboard builders in `handlers/shop.py` and `run.py`.
+  - Implemented centralized checkout route helpers in `handlers/shop.py`:
+    - `direct + vi` resolves to VietQR.
+    - `direct + en` resolves to Binance.
+    - `hybrid + vi` shows Wallet/VietQR.
+    - `hybrid + en` shows Wallet/Binance.
+  - Added route-aware callback handlers:
+    - `payroute_{wallet_vnd|wallet_usdt|vietqr|binance}_{product_id}`
+    - `salepayroute_{wallet_vnd|wallet_usdt|vietqr|binance}_{sale_item_id}`
+  - Quantity selection now remembers `buying_payment_route`; after quantity:
+    - Wallet routes use internal balance fulfillment.
+    - VietQR/Binance routes create the external payment order immediately without showing the old Bank/Binance gateway choice screen.
+  - Updated VietQR/Binance payment messages so direct-order action buttons are attached to the QR/payment details message itself via `build_direct_order_actions_keyboard(...)`.
+  - Legacy direct-payment callbacks now delete/fallback-clear the old prompt message after creating the payment message, removing the extra top message shown in the screenshot when Telegram allows deletion.
+  - Updated `run.py` callback registrations for the new route callbacks.
+  - Updated `config.py`, `.env.example`, and `SETUP_GUIDE.md` payment-mode comments to document the new language-aware Direct/Hybrid semantics.
+  - Verification completed:
+    - Python AST parse passed for `handlers/shop.py`, `run.py`, and `config.py`.
+    - `python -c "import run"` passed.
+    - Payment-route matrix smoke test passed for Direct VI, Direct EN, Hybrid VI, and Hybrid EN.
+    - Static text check confirmed actions are attached to VietQR/Binance payment messages and route state is cleared.
+    - `git diff --check` passed for touched files with only existing line-ending/profile warnings.
+- Now:
+  - Summarize implemented checkout flow and deployment/restart notes to the user.
+- Next:
+  - Deploy/restart the production Bot; test four cases: Direct VI, Direct EN, Hybrid VI, Hybrid EN.
+- Open Questions:
+  - Whether English Wallet should always prefer USDT wallet or VND wallet when `price_usdt` is missing is **UNCONFIRMED**; implementation uses USDT wallet when product has `price_usdt`, otherwise VND wallet.
+
+- Current scope add-on (latest request): fix callback buttons attached to QR/photo payment messages failing with Telegram error `There is no text in the message to edit`.
+- User evidence:
+  - Production logs at `2026-04-27 21:15:41` through `21:15:50` show repeated `Telegram network error while processing update: There is no text in the message to edit`.
+  - User reports all buttons on the QR Code message return this error.
+- Constraints / assumptions:
+  - Root cause is likely callbacks such as status/history/support still calling `edit_message_text` even when the callback originated from a photo/caption QR message.
+  - Fix should preserve the improved QR-button placement while making callbacks reply/send a new text message when the source message has no editable text.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Latest QR callback error captured in the continuity ledger.
+- Now:
+  - Inspect direct-order status, history, support, and delete callback handlers and add a safe edit-or-reply path for non-text messages.
+- Next:
+  - Run Python syntax/import checks and a small non-text callback smoke test after patching.
+- Open Questions:
+  - Whether any custom client-side Telegram behavior affects photo caption editing is **UNCONFIRMED**; implementation will avoid editing photo messages for text responses.
+
+- Current scope progress update (QR/photo callback edit fix):
+- Done:
+  - Added `helpers.telegram_resilience.edit_or_reply_callback_message(...)`.
+    - If a callback originates from a normal text message, it edits the message.
+    - If the callback originates from a photo/caption message such as a VietQR QR image, it sends a reply text instead of calling `edit_message_text`.
+    - It treats repeated same-content edits (`Message is not modified`) as harmless.
+  - Updated `helpers.bot_messages.edit_bot_message_text(...)` to use the new safe edit-or-reply helper, so Dashboard-template callback messages such as Support also work from QR/photo buttons.
+  - Updated QR action callbacks:
+    - `show_direct_order_status` now uses safe edit-or-reply.
+    - `show_history` now uses safe edit-or-reply and tracks the returned text message when a reply is created.
+    - `delete_message` fallback now uses safe edit-or-reply if Telegram cannot delete the original message.
+  - Verification completed:
+    - Python AST parse passed for `helpers/telegram_resilience.py`, `helpers/bot_messages.py`, `handlers/shop.py`, `handlers/start.py`, and `run.py`.
+    - `python -c "import run"` passed.
+    - Smoke test confirmed a fake photo-message callback replies with text and does not call `edit_message_text`.
+    - `git diff --check` passed for touched files with only existing LF/CRLF warnings.
+- Now:
+  - Summarize root cause, fix, and restart/test steps to the user.
+- Next:
+  - Deploy/restart the Bot, create a VietQR/Binance payment message, then test buttons: Check status, History, Support, Delete.
+- Open Questions:
+  - Whether production still runs an older process after code update is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): English-language main checkout flow appears not to run and produces no logs.
+- User evidence:
+  - Screenshot after switching to English shows:
+    - `✅ Switched to English.`
+    - English welcome/catalog messages.
+    - Product catalog rendered with product inline buttons.
+  - User says when choosing English the main flow does not work at all and no error logs appear.
+- Constraints / assumptions:
+  - Since product catalog renders, language switching and catalog loading are working.
+  - Failure likely occurs in a later callback after a product/button click, possibly route callback parsing or callback pattern registration.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Latest English-flow failure captured in the continuity ledger.
+- Now:
+  - Inspect route callback parsing/registration for English checkout, especially `payroute_*`/`salepayroute_*` paths and callbacks containing underscores.
+- Next:
+  - Patch parser/handler ordering if needed, run smoke tests for English Direct/Hybrid callback paths, and summarize restart/test steps.
+- Open Questions:
+  - Exact user click where the flow stops is **UNCONFIRMED**; infer from screenshot and code first.
+
+- Current scope progress update (English Direct checkout fix):
+- Done:
+  - Inspected English product callback path:
+    - Product catalog buttons still use `buy_{product_id}` and `run.py` still registers `^buy_\d+$`, so the catalog callback itself is wired.
+    - `payroute_*` and `salepayroute_*` parsers already handle routes containing underscores.
+  - Identified the practical issue in Direct mode:
+    - Direct mode still rendered a one-button payment-route step instead of going straight to quantity.
+    - Binance Direct used the external-payment flow but its quantity prompt still relied on the VND route capacity check, so USDT-only products could appear unavailable before checkout.
+  - Patched `handlers/shop.py`:
+    - Direct + English product click now preselects `binance` and immediately opens quantity selection.
+    - Direct + English Sale click now preselects `binance` and immediately opens quantity selection.
+    - Direct + Vietnamese still preselects `vietqr` and immediately opens quantity selection.
+    - Binance route now allows either `price_usdt` or VND `price`; USDT-only English products can proceed to Binance external payment.
+    - External routes show `No wallet balance required` / `Không dùng ví` in the quantity prompt instead of a misleading wallet balance.
+    - Hybrid English now shows Binance for USDT-only products as well as Wallet USDT.
+  - Verification completed:
+    - Python AST parse passed for `handlers/shop.py`, `run.py`, `helpers/telegram_resilience.py`, and `helpers/bot_messages.py`.
+    - `python -c "import run"` passed.
+    - Direct English product/Sale callback smoke test passed with route `binance` and direct quantity prompt entry.
+    - Binance USDT-only capacity smoke test passed with stock-based `max_can_buy`.
+    - Hybrid English keyboard smoke test passed with both `payroute_wallet_usdt_*` and `payroute_binance_*`.
+    - `git diff --check -- handlers/shop.py CONTINUITY.md` passed with only existing LF/CRLF normalization warnings.
+- Now:
+  - Summarize cause, patch, and restart/test steps to the user.
+- Next:
+  - Restart the Bot process and test English Direct: language English -> click product -> quantity prompt should appear immediately -> select quantity -> Binance payment message.
+- Open Questions:
+  - If production still shows no response after restart, the next likely cause is an old running process or Telegram update delivery issue, not the checked route parser.
+
+- Current scope add-on (latest request): Binance payment address display/copy mismatch.
+- User evidence:
+  - Screenshot shows Binance payment message displaying one BSC address on the `Address:` line.
+  - When user clicks/copies the address, Telegram input contains a different `0x...` address.
+- Constraints / assumptions:
+  - Do not print or inspect secret/API keys.
+  - Wallet addresses are not treated as secrets here, but avoid dumping `.env`.
+  - Likely cause is message/entity rendering or mixed settings/runtime source, not enough evidence yet.
+- Done:
+  - Latest address-copy mismatch captured in the continuity ledger.
+- Now:
+  - Inspect Binance payment message rendering, HTML escaping, and address entity formatting.
+- Next:
+  - Patch message format so the displayed address and copyable text cannot diverge, then run syntax/smoke checks.
+- Open Questions:
+  - Whether the copied address comes from old database setting, old process env, or Telegram inline-code entity behavior is **UNCONFIRMED**.
+
+- Current scope progress update (Binance address copy fix):
+- Done:
+  - Inspected Binance payment rendering in `handlers/shop.py`.
+  - Found the address was rendered as inline HTML `<code>{runtime['address']}</code>`, while payment-order creation returns/stores `created_order['payment_address']`.
+  - Patched Binance payment message:
+    - display address now comes from `created_order.payment_address` with runtime fallback.
+    - copy address button uses Telegram `CopyTextButton` with the same `created_order.payment_address` value.
+    - address line is no longer wrapped in inline `<code>`, avoiding Telegram client inline-code copy/entity mismatch.
+    - added `Copy amount` and optional `Copy memo/tag` buttons for Binance payments.
+    - HTML-escaped product name, asset, network label, address, amount, support code, and tag before sending with `parse_mode="HTML"`.
+  - Verification completed:
+    - Python AST parse passed for `handlers/shop.py` and `run.py`.
+    - `python -c "import run"` passed.
+    - Binance fake-send smoke test passed:
+      - displayed address matches `created_order.payment_address`.
+      - address is not sent as `<code>...</code>`.
+      - first inline button `copy_text` contains the same displayed address.
+      - amount copy button contains the exact amount text.
+    - `git diff --check -- handlers/shop.py CONTINUITY.md` passed with only existing LF/CRLF normalization warnings.
+- Now:
+  - Summarize the fix and restart/test steps to the user.
+- Next:
+  - Restart the Bot and create a new Binance payment message; use the new `Copy address` button instead of clicking the address text.
+- Open Questions:
+  - Old already-sent payment messages cannot be changed retroactively; only new messages after restart will have copy buttons.
+
+- Current scope add-on (latest request): Binance copy address still returns the Binance API secret; Dashboard Binance API inputs are unclear and missing a dedicated deposit address input.
+- User evidence / hypothesis:
+  - Copy address still outputs the wrong value and appears to be copying the Binance Secret Key.
+  - Dashboard settings currently show Binance API credentials without visible per-field titles, making them easy to confuse.
+  - Dashboard lacks a separate Binance deposit address field.
+- Constraints / assumptions:
+  - Do not print or inspect API key/secret values.
+  - Add a dedicated deposit address setting and make API credential fields visibly labeled.
+  - Bot must never display/copy an address that equals the configured API key or API secret.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Latest request captured in the continuity ledger.
+- Now:
+  - Patch Dashboard settings API/UI and Binance runtime settings to support explicit `binance_direct_address` and optional memo/tag.
+- Next:
+  - Verify Dashboard TypeScript, Bot import/smoke behavior, and summarize restart/configuration steps.
+- Open Questions:
+  - Whether production DB currently contains a wrong address-like setting is **UNCONFIRMED**; avoid printing secret values while adding guardrails.
+
+- Current scope progress update (Binance address/secret separation fix):
+- Done:
+  - Added `binance_direct_address` and `binance_direct_address_tag` to Dashboard settings API allowlist.
+  - Updated Dashboard Settings Binance section:
+    - API Key and API Secret now have visible labels.
+    - Added a dedicated non-secret Deposit address field that is displayed/copied to customers.
+    - Added optional Memo/Tag field.
+    - Coin, Network, and Rate fields now have visible labels too.
+  - Added env fallback keys in Bot config:
+    - `BINANCE_DIRECT_ADDRESS`
+    - `BINANCE_DIRECT_ADDRESS_TAG`
+  - Updated `helpers/binance_client.py`:
+    - reads address/tag from DB settings first, env fallback second.
+    - uses manual address/tag as the payment address when configured.
+    - falls back to Binance API deposit-address fetch only when manual address is empty.
+    - rejects Binance runtime if the configured/fetched address exactly matches the API key or API secret, preventing secret leakage into payment messages/copy buttons.
+  - Updated `.env.example`, `SETUP_GUIDE.md`, and `BOT_DASHBOARD_DEPLOYMENT_CHECKLIST.md` with the new address field guidance.
+  - Updated ops health SQL setting checklist to include Binance address/network/rate keys in both standalone and all-in-one SQL.
+  - Verification completed:
+    - Python AST parse passed for `helpers/binance_client.py`, `config.py`, `handlers/shop.py`, and `sepay_checker.py`.
+    - `python -B -c "import run"` passed.
+    - Dashboard TypeScript check passed.
+    - Binance runtime smoke test passed:
+      - manual address is used without fetching deposit address.
+      - address equal to API secret is rejected with `binance_address_matches_secret`.
+      - empty manual address falls back to Binance API address fetch.
+    - Root and nested Dashboard `git diff --check` passed with only existing LF/CRLF warnings.
+- Now:
+  - Summarize the fix and tell the user how to update Dashboard Settings/restart services.
+- Next:
+  - Operator should paste the real Binance deposit address into Dashboard Settings, save, restart Bot, and create a new Binance payment message.
+- Open Questions:
+  - Existing already-created pending Binance orders/messages may still contain the old wrong address and should be cancelled/recreated if they were generated before this fix.
+
+- Current scope add-on (latest request): remove Binance `Copy address`/`Copy amount` buttons, put the Binance deposit address back into a code block, and investigate why copy still produced a different address.
+- User evidence / hypothesis:
+  - Screenshot shows Binance payment message displaying one address, but copy action still inserts a different address into Telegram input.
+  - User now suspects the dedicated Copy buttons are the problem, not just inline/block code formatting.
+- Constraints / assumptions:
+  - Do not inspect or print API secrets.
+  - Remove copy-button payloads from Binance payment messages so stale/wrong button text cannot diverge from visible message text.
+  - Keep the payment action buttons such as Check status, History, Support, Delete.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Latest request captured in the continuity ledger.
+- Current scope progress update (remove Binance copy buttons):
+- Done:
+  - Inspected `handlers/shop.py` Binance payment rendering and `build_direct_order_actions_keyboard`.
+  - Removed direct-order copy payload support from `build_direct_order_actions_keyboard`.
+    - No `CopyTextButton` import/use remains in Python source.
+    - Binance payment messages no longer emit `Copy address`, `Copy amount`, or `Copy memo/tag` buttons.
+    - Status/History/Support/Delete buttons remain.
+  - Restored Binance Address display to a code entity on its own line:
+    - `Address:\n<code>{payment_address}</code>`
+  - Added a safe warning if stored order address differs from runtime address, logging only code/source and lengths, not address values or secrets.
+  - Verification completed:
+    - Initial `py_compile` verification was blocked by Windows `__pycache__` access denied, so no-write AST parse was used instead.
+    - `python -B -c "import run"` passed.
+    - Python AST parse passed for `handlers/shop.py`, `helpers/binance_client.py`, and `run.py`.
+    - Binance payment render smoke test passed:
+      - displayed address is wrapped in `<code>...</code>`.
+      - no inline keyboard button contains `copy_text`.
+      - no Copy address label is present in the payment keyboard.
+    - `git diff --check -- handlers/shop.py CONTINUITY.md` passed with only existing LF/CRLF normalization warnings.
+- Now:
+  - Summarize root cause hypothesis and restart/test instructions to the user.
+- Next:
+  - Operator should restart the Bot and create a brand-new Binance payment message; old messages still contain old button payloads.
+- Open Questions:
+  - Whether the wrong copied value came from an already-sent stale message, old running process, or a stale `CopyTextButton` payload is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): address copy mismatch persists even after Copy buttons were removed.
+- User evidence:
+  - New screenshot shows no Copy buttons; only Check status/History/Support/Delete remain.
+  - Visible highlighted Address is `0xce3eecd4b43c619611fe74180a17fe42512a4715`.
+  - Telegram input after copy/paste is `0x22c61E0aC82e1D9988f448Cabe0A39dAae8B9586`.
+- Constraints / assumptions:
+  - Do not inspect or print API secrets.
+  - The mismatch now points away from `CopyTextButton` and toward Telegram client code-entity/copy behavior or stale clipboard/process behavior.
+  - Make the visible address plain selectable text, not a code entity, so Telegram has no code-copy entity payload to use.
+  - Preserve status/action buttons.
+- Done:
+  - Latest screenshot/evidence captured in the continuity ledger.
+- Current scope progress update (plain-text Binance address):
+- Done:
+  - Patched `handlers/shop.py` Binance payment rendering:
+    - Address is now plain escaped text: `Address:\n{payment_address}`.
+    - Address is no longer wrapped in `<code>...</code>`.
+    - Direct-order action keyboard still has only Check status, History, Support, Delete.
+  - Verification completed:
+    - Python AST parse passed for `handlers/shop.py`, `helpers/binance_client.py`, and `run.py`.
+    - `python -B -c "import run"` passed.
+    - Binance plain-address render smoke test passed:
+      - text contains `Address:\n{address}`.
+      - text does not contain `<code>{address}</code>`.
+      - no inline keyboard button contains `copy_text`.
+      - no Copy address label is present.
+    - `git diff --check -- handlers/shop.py CONTINUITY.md` passed with only existing LF/CRLF normalization warnings.
+- Now:
+  - Explain that the remaining mismatch was likely Telegram Desktop copying a code entity/stale clipboard rather than a bot callback.
+- Next:
+  - Operator should restart the Bot, create a brand-new Binance message, and test copy via selecting the plain text address.
+- Open Questions:
+  - Whether Telegram Desktop was copying stale clipboard content or a wrong code entity is **UNCONFIRMED** until testing a plain-text address message.
+
+- Current scope add-on (latest request): clarify which USDT amount to transfer for a Binance payment message.
+- User evidence:
+  - Message shows `Listed USDT price: 1.000000 USDT`.
+  - Message shows `Exact amount: 1.000048 USDT`.
+- Constraints / assumptions:
+  - Advisory answer only; no code changes needed.
+  - The exact amount includes a small unique suffix for auto-matching the pending direct order.
+- Done:
+  - Latest request captured in the continuity ledger.
+- Now:
+  - Tell the user to send exactly `1.000048 USDT` on BSC/BEP20 and explain why listed price is not the payment amount.
+- Next:
+  - If desired later, improve copy/wording in Binance payment template to make `Exact amount` visually dominant.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): Binance payment message still does not render Binance ID / Binance Pay section.
+- User evidence:
+  - Screenshot shows the current Binance payment message still uses the old single-method layout with coin, network, address, listed USDT price, exact amount, and support code.
+  - User says: "Chưa thấy nó render ra Binance ID".
+- Constraints / assumptions:
+  - Render Binance Pay ID only when `binance_pay_id` / `BINANCE_PAY_ID` is configured.
+  - Keep BEP20 wallet transfer visible as the second payment method.
+  - Use Telegram HTML code/pre blocks for copy-safe values rather than Markdown triple-backticks because the message is already sent with `parse_mode="HTML"`.
+  - Do not inspect or print API secrets.
+- Done:
+  - Latest Binance ID render issue captured in the continuity ledger.
+- Now:
+  - Patch settings allowlist/UI/env support and Binance payment text rendering so new payment messages show Binance Pay ID when configured.
+- Next:
+  - Verify Python syntax/imports and Dashboard TypeScript after patching.
+- Open Questions:
+  - Whether Binance Pay transaction auto-detection is available with the current Binance API permissions is **UNCONFIRMED**; this batch focuses on rendering/configuring the ID.
+
+- Current scope progress update (Binance Pay ID render):
+- Done:
+  - Added `BINANCE_PAY_ID` env fallback in Bot config and kept DB setting `binance_pay_id` as the preferred runtime source.
+  - Updated Binance runtime settings to return `pay_id`.
+  - Reworked `send_binance_direct_payment(...)` message rendering:
+    - when `pay_id` is configured, new payment messages show `CÁCH 1: BINANCE PAY` / `OPTION 1: BINANCE PAY`.
+    - BEP20/on-chain transfer remains visible as `CÁCH 2` / `OPTION 2`.
+    - Binance ID, amount, note/code, and wallet address are rendered with Telegram HTML `<pre>` blocks for safer copy behavior while keeping `parse_mode="HTML"`.
+    - Footer copy now states BEP20 is auto-checked; Binance Pay uses Pay ID + exact note for reconciliation until a dedicated Pay checker is implemented.
+  - Added `binance_pay_id` to Admin Dashboard settings API allowlist and Settings UI.
+  - Updated `.env.example`, setup/deploy docs, and ops health SQL setting checklist (`supabase_schema_admin_ops_hardening.sql` plus all-in-one mirror).
+  - Removed the unused experimental Binance Pay transactions helper to keep this batch focused on rendering/configuration.
+  - Verification completed:
+    - Python AST parse passed for `config.py`, `helpers/binance_client.py`, `handlers/shop.py`, and `run.py`.
+    - `python -B -c "import run"` passed.
+    - Admin Dashboard TypeScript check passed.
+    - Binance Pay render smoke test passed and confirmed `CÁCH 1: BINANCE PAY`, `<pre>1039622524</pre>`, `CÁCH 2: CHUYỂN VÍ`, address `<pre>` output, and BEP20 auto-check wording.
+    - Root `git diff --check` passed with only existing LF/CRLF normalization warnings.
+    - Nested Dashboard `git diff --check` passed using one-command `safe.directory` override, with only LF/CRLF warnings.
+- Now:
+  - Summarize the fix and tell the user to set `Binance Pay ID`, save settings, restart Bot, and create a new payment message.
+- Next:
+  - If Binance Pay itself must auto-confirm later, implement and verify a Binance Pay transaction checker separately after confirming API permissions/response shape.
+- Open Questions:
+  - Existing already-sent messages will not update retroactively; only newly created Binance payment messages after restart/settings save will show Binance ID.
+
+- Current scope add-on (latest request): adjust Binance Pay amount/matching copy and remove BEP20 listed price line.
+- User request:
+  - Binance Pay can identify by Note, so Binance Pay should use the exact/base USDT amount and rely on the Note/code.
+  - BEP20 should no longer show `Listed USDT price`.
+- Constraints / assumptions:
+  - Current on-chain checker still needs the unique BEP20 amount suffix for automatic matching.
+  - Binance Pay amount in the message should be the quoted/base USDT total when available, otherwise VND total converted by configured Binance rate.
+  - Do not claim Binance Pay note auto-confirm through `/sapi/v1/pay/transactions` unless checker support is implemented and verified; official Binance Pay history docs do not show a `note` field in the response example.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Latest Binance Pay/BEP20 message request captured in the continuity ledger.
+- Now:
+  - Patch `handlers/shop.py` so Binance Pay amount uses base USDT, BEP20 amount keeps unique exact suffix, and BEP20 no longer renders Listed USDT price.
+- Next:
+  - Run Bot syntax/import checks and render smoke tests.
+- Open Questions:
+  - Whether the user's Binance Pay account/API exposes Note in a separate/non-standard endpoint is **UNCONFIRMED**.
+
+- Current scope progress update (Pay amount and BEP20 listed-price cleanup):
+- Done:
+  - Patched `handlers/shop.py`:
+    - Binance Pay amount now renders the base/quoted USDT total (`quoted_total_asset`) instead of the unique BEP20 suffix amount.
+    - If no quoted USDT total is available, Binance Pay amount falls back to `total_price / binance_direct_rate`, rounded to 6 decimals.
+    - BEP20 wallet amount still renders the unique suffix amount used by the existing on-chain matcher.
+    - Removed `Listed USDT price` / `Giá USDT gốc` from the BEP20 wallet section.
+  - Verified official Binance Pay history docs for `/sapi/v1/pay/transactions`; the response example includes amount/currency/payer/receiver fields but does not list a `note` field, so note-based auto-confirm was not added in this batch.
+  - Verification completed:
+    - Python AST parse passed for `handlers/shop.py`, `helpers/binance_client.py`, `config.py`, and `run.py`.
+    - `python -B -c "import run"` passed.
+    - Render smoke test passed:
+      - Binance Pay section shows base amount `<pre>1.000000</pre>`.
+      - BEP20 section still exists.
+      - `Listed USDT price` is absent.
+    - `git diff --check -- handlers/shop.py CONTINUITY.md` passed with only LF/CRLF normalization warnings.
+- Now:
+  - Summarize the exact behavior change and the Binance Pay Note API caveat.
+- Next:
+  - Restart the Bot and create a brand-new Binance payment message to verify the visible text.
+- Open Questions:
+  - Whether a separate Binance Pay merchant/webhook integration is available for Note matching is **UNCONFIRMED**.
+
+- Current scope add-on (latest request): make Binance Pay amount match BEP20 exact/suffixed amount for stable existing flow.
+- Constraints / assumptions:
+  - Current on-chain checker and pending order storage use the exact suffixed asset amount.
+  - Use the same visible amount for Binance Pay and BEP20 so users send the amount the existing matcher expects.
+  - Keep `Listed USDT price` removed from BEP20.
+  - Preserve unrelated dirty worktree changes.
+- Done:
+  - Latest Binance Pay amount alignment request captured in the continuity ledger.
+- Now:
+  - Patch `handlers/shop.py` so Binance Pay renders `exact_amount_block` and remove unused base `pay_amount` rendering.
+- Next:
+  - Run Bot syntax/import checks and a render smoke test proving both sections show the same exact amount.
+- Open Questions:
+  - None.
+
+- Current scope add-on (latest request): convert row-level `Hành động` controls on the Products admin page into compact dropdown menus.
+- Constraints / assumptions:
+  - Keep the top-level create buttons as the primary "add" actions.
+  - Move only per-row CRUD actions into dropdowns for Products, Bot folders, and Format templates.
+  - Preserve the modal CRUD flow and existing mutation behavior.
+- Done:
+  - Re-read ledger at turn start and captured the latest request.
+  - Added shared row action dropdown rendering in `admin_dashboard_telegram_bot/app/(admin)/products/page.tsx`.
+  - Converted Folder row actions to a dropdown with `Chỉnh sửa` and `Xóa folder`.
+  - Converted Product row actions to dropdown items for `Chỉnh sửa`, `Ẩn`/`Bỏ ẩn`, `Xóa mềm`, and `Khôi phục` as appropriate.
+  - Converted Format template row actions to a dropdown with `Chỉnh sửa` and `Xóa`.
+  - Added dropdown styling in `admin_dashboard_telegram_bot/app/globals.css` and reduced the action column width.
+  - Verification completed:
+    - Dashboard TypeScript check passed.
+    - Static search confirmed old `product-row-actions` / `action-pill` usages are gone from Products page.
+    - Nested Dashboard `git diff --check` for Products page and CSS passed with only LF/CRLF warnings.
+- Now:
+  - Summarize the CRUD action dropdown cleanup to the user.
+- Next:
+  - If visual browser automation becomes available, verify `/products` dropdown opening/closing in the in-app browser.
+- Open Questions:
+  - True browser-use visual verification remains unavailable in this session due the previously blocked/missing browser-use callable tooling.

@@ -15,6 +15,7 @@ Phạm vi: project `admin_dashboard_telegram_bot`, tập trung vào Dashboard qu
   - product/stock mutations rủi ro cao
   - settings có secret masking
   - system health/schema snapshot
+  - Bot message templates
   - admin audit log
   - license APIs
   - Telegram broadcast jobs
@@ -29,8 +30,21 @@ Phạm vi: project `admin_dashboard_telegram_bot`, tập trung vào Dashboard qu
   - Finance: Deposits, Withdrawals, USDT
   - Customers: Users, Licenses
   - System: Health, Settings
+  - System có thêm Bot Messages để chỉnh nội dung message Bot và Telegram custom emoji ID.
 - Sidebar có badge trạng thái Ops dựa trên health snapshot.
 - Có trang login và màn hình báo không có quyền admin.
+
+## Chuẩn CRUD áp dụng
+
+- Các mutation rủi ro cao đi qua API server-side thay vì để browser ghi trực tiếp vào bảng.
+- API mutation kiểm tra admin session, validate input cơ bản và ghi audit log khi migration audit đã được apply.
+- Form tạo/sửa có trạng thái loading/disabled để tránh submit trùng.
+- Thao tác destructive hoặc tài chính dùng confirm modal trong Dashboard thay vì `window.confirm` thô:
+  - duyệt/từ chối nạp/rút tiền
+  - duyệt/đánh dấu thất bại direct order
+  - xóa stock theo custom-check
+  - xóa/revoke/reset license
+- Sau mutation, UI reload lại list liên quan để tránh trạng thái cũ còn nằm trên màn hình.
 
 ## Dashboard tổng quan
 
@@ -53,6 +67,22 @@ Phạm vi: project `admin_dashboard_telegram_bot`, tập trung vào Dashboard qu
   - thời gian
 - Dữ liệu lấy qua analytics API/RPC fallback, không chỉ đọc bảng trực tiếp từ client.
 
+## Bot Messages
+
+- Trang `/bot-messages` cho phép quản trị các message Bot có traffic cao.
+- Có thể sửa:
+  - template key và ngôn ngữ
+  - title/description
+  - body text
+  - fallback emoji
+  - Telegram custom emoji ID
+  - trạng thái enabled/disabled
+  - danh sách biến gợi ý
+- API `/api/admin/bot-messages` chạy server-side, kiểm tra admin session và ghi audit log khi lưu.
+- Bot đọc template từ bảng `bot_message_templates` với cache ngắn hạn, nên nội dung mới có thể áp dụng mà không cần deploy code.
+- Các template Shop/checkout đang được seed gồm `product_payment_options`, `sale_payment_options`, `quantity_quick_prompt`, `quantity_manual_prompt`, `quantity_force_reply_prompt` và `direct_payment_options`.
+- Editor hỗ trợ custom emoji từng dòng bằng cú pháp `{emoji:TELEGRAM_CUSTOM_EMOJI_ID}` trong `body_text`; field `custom_emoji_id` vẫn dùng cho một emoji prefix ở đầu toàn message.
+
 ## Quản lý sản phẩm
 
 - Danh sách sản phẩm tách theo:
@@ -71,10 +101,10 @@ Phạm vi: project `admin_dashboard_telegram_bot`, tập trung vào Dashboard qu
   - format dữ liệu giao hàng
   - giá theo số lượng
   - khuyến mãi mua X tặng Y
-- Khi chèn sản phẩm vào một vị trí, Dashboard có logic đẩy vị trí các sản phẩm sau.
+- Khi chèn sản phẩm/folder vào một vị trí, server API có logic đẩy vị trí các dòng sau để tránh lệch thứ tự khi nhiều admin thao tác.
 - Có ẩn/bỏ ẩn sản phẩm mà không mất lịch sử đơn.
 - Có xóa mềm/khôi phục sản phẩm để giữ khóa ngoại với đơn hàng cũ.
-- Các thao tác ẩn/bỏ ẩn, xóa mềm/khôi phục, xóa folder đi qua server API và ghi audit log khi DB hỗ trợ.
+- Các thao tác tạo/sửa/ẩn/bỏ ẩn/xóa mềm/khôi phục sản phẩm, tạo/sửa/xóa folder và tạo/sửa/xóa format template đi qua server API và ghi audit log khi DB hỗ trợ.
 - Quản lý folder sản phẩm Bot:
   - tạo folder
   - sửa tên/vị trí folder
@@ -313,6 +343,9 @@ Phạm vi: project `admin_dashboard_telegram_bot`, tập trung vào Dashboard qu
 4. Thêm audit log + System Health page + RPC/schema checklist.
 5. Reports có export CSV.
 6. Products hỗ trợ fallback emoji và Telegram custom emoji ID cho inline-button icon.
+7. Products/folders/format templates được chuyển sang mutation API server-side có validation, loading state và audit log.
+8. Direct Orders, Stock custom-check, Finance và Licenses dùng confirm modal thống nhất cho thao tác nhạy cảm/destructive.
+9. Không còn raw browser confirm trong các page CRUD chính của Admin Dashboard.
 
 ### Còn cần sau deploy
 

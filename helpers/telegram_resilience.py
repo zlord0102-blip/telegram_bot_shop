@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import Any, TypeVar
 
 from telegram.error import BadRequest, NetworkError, RetryAfter, TimedOut
 
@@ -29,6 +29,18 @@ def _env_float(name: str, default: float, *, minimum: float = 0.1, maximum: floa
     return max(minimum, min(maximum, value))
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+    text = str(raw_value).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def is_stale_callback_query_error(error: BaseException) -> bool:
     if not isinstance(error, BadRequest):
         return False
@@ -40,22 +52,62 @@ def is_stale_callback_query_error(error: BaseException) -> bool:
     )
 
 
-async def safe_answer_callback_query(query, *args, action: str = "callback_query.answer", **kwargs) -> bool:
-    """Answer a callback query without breaking the handler on stale Telegram callbacks."""
-    if query is None:
-        return False
-
+async def _answer_callback_query_once(
+    query,
+    args: tuple,
+    kwargs: dict,
+    *,
+    action: str,
+    suppress_unexpected: bool,
+) -> bool:
+    timeout = _env_float("BOT_CALLBACK_ANSWER_TIMEOUT", 1.2, minimum=0.2, maximum=5.0)
     try:
-        await query.answer(*args, **kwargs)
+        await asyncio.wait_for(query.answer(*args, **kwargs), timeout=timeout)
         return True
     except BadRequest as exc:
         if is_stale_callback_query_error(exc):
             logger.info("Ignored stale callback query in %s: %s", action, exc)
             return False
+        if suppress_unexpected:
+            logger.warning("Could not answer callback query in %s: %s", action, exc)
+            return False
         raise
-    except (NetworkError, TimedOut) as exc:
+    except (NetworkError, TimedOut, asyncio.TimeoutError) as exc:
         logger.warning("Could not answer callback query in %s: %s", action, exc)
         return False
+    except Exception as exc:
+        if suppress_unexpected:
+            logger.warning("Unexpected callback answer failure in %s: %s", action, exc)
+            return False
+        raise
+
+
+async def safe_answer_callback_query(query, *args, action: str = "callback_query.answer", **kwargs) -> bool:
+    """Answer a callback query without breaking the handler on stale Telegram callbacks."""
+    if query is None:
+        return False
+
+    show_alert = bool(kwargs.get("show_alert"))
+    background_allowed = _env_bool("BOT_CALLBACK_ANSWER_BACKGROUND", True) and not show_alert
+    if background_allowed:
+        asyncio.create_task(
+            _answer_callback_query_once(
+                query,
+                args,
+                kwargs,
+                action=action,
+                suppress_unexpected=True,
+            )
+        )
+        return True
+
+    return await _answer_callback_query_once(
+        query,
+        args,
+        kwargs,
+        action=action,
+        suppress_unexpected=False,
+    )
 
 
 async def telegram_api_call(
@@ -99,3 +151,40 @@ async def telegram_api_call(
 
     assert last_error is not None
     raise last_error
+
+
+def _callback_message_has_editable_text(query) -> bool:
+    message = getattr(query, "message", None)
+    return bool(getattr(message, "text", None))
+
+
+async def edit_or_reply_callback_message(
+    query,
+    *,
+    action: str = "callback.edit_or_reply_text",
+    **kwargs: Any,
+) -> Any:
+    """Edit callback text messages, but reply when the callback came from a photo/caption."""
+    if query is None or getattr(query, "message", None) is None:
+        raise ValueError("callback query has no message")
+
+    message = query.message
+    payload = {key: value for key, value in kwargs.items() if value is not None}
+
+    if _callback_message_has_editable_text(query):
+        try:
+            return await telegram_api_call(
+                lambda: query.edit_message_text(**payload),
+                action=f"{action}.edit_message_text",
+            )
+        except BadRequest as exc:
+            error_text = str(exc).lower()
+            if "message is not modified" in error_text:
+                return message
+            if "there is no text in the message to edit" not in error_text:
+                raise
+
+    return await telegram_api_call(
+        lambda: message.reply_text(**payload),
+        action=f"{action}.reply_text",
+    )

@@ -1,5 +1,7 @@
 import asyncio
 import json
+import logging
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -8,6 +10,7 @@ from .supabase_client import get_supabase_client
 
 
 DEFAULT_SALE_CUSTOM_EMOJI_ID = "6055192572056309981"
+logger = logging.getLogger(__name__)
 
 
 def _now_iso() -> str:
@@ -86,6 +89,39 @@ def _is_missing_rpc_error_message(message: str) -> bool:
         "could not find the function" in lowered
         or "schema cache" in lowered
         or "pgrst202" in lowered
+    )
+
+
+def _is_transient_network_error(exc: Exception) -> bool:
+    cls_name = exc.__class__.__name__.lower()
+    module = exc.__class__.__module__.lower()
+    message = str(exc or "").lower()
+    transient_names = (
+        "readerror",
+        "connecterror",
+        "writeerror",
+        "timeout",
+        "timeoutexception",
+        "pooltimeout",
+        "networkerror",
+        "remoteprotocolerror",
+    )
+    transient_messages = (
+        "winerror 10035",
+        "non-blocking socket operation could not be completed immediately",
+        "connection reset",
+        "connection aborted",
+        "connection timed out",
+        "server disconnected",
+        "temporarily unavailable",
+    )
+    return (
+        "httpx" in module
+        or "httpcore" in module
+        or any(text in message for text in transient_messages)
+    ) and (
+        any(name in cls_name for name in transient_names)
+        or any(text in message for text in transient_messages)
     )
 
 
@@ -325,8 +361,32 @@ async def _fetch_product_positions(product_ids: List[Any]) -> Dict[str, Optional
     return position_map
 
 
-async def _to_thread(func, *args, **kwargs):
-    return await asyncio.to_thread(func, *args, **kwargs)
+def _supabase_network_retry_attempts() -> int:
+    return max(1, min(_safe_int(os.getenv("SUPABASE_NETWORK_RETRY_ATTEMPTS"), 2), 5))
+
+
+def _supabase_network_retry_delay() -> float:
+    return max(0.0, min(_safe_float(os.getenv("SUPABASE_NETWORK_RETRY_DELAY"), 0.35), 3.0))
+
+
+async def _to_thread(func, *args, retry_transient: bool = False, **kwargs):
+    attempts = _supabase_network_retry_attempts() if retry_transient else 1
+    delay = _supabase_network_retry_delay()
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return await asyncio.to_thread(func, *args, **kwargs)
+        except Exception as exc:
+            if not retry_transient or attempt >= attempts or not _is_transient_network_error(exc):
+                raise
+            logger.warning(
+                "Transient Supabase network error; retrying read call (%s/%s): %s",
+                attempt,
+                attempts,
+                exc,
+            )
+            if delay > 0:
+                await asyncio.sleep(delay * attempt)
 
 
 def _get_table(name: str):
@@ -334,7 +394,15 @@ def _get_table(name: str):
     return supabase.table(name)
 
 _settings_cache: Dict[str, Dict[str, Any]] = {"values": {}, "ts": 0.0}
+_bot_message_template_cache: Dict[str, Tuple[Optional[Dict[str, Any]], float]] = {}
+_product_list_cache: Tuple[Optional[List[Dict[str, Any]]], float] = (None, 0.0)
+_sale_product_list_cache: Tuple[Optional[List[Dict[str, Any]]], float] = (None, 0.0)
+_folder_list_cache: Tuple[Optional[List[Dict[str, Any]]], float] = (None, 0.0)
 _SETTINGS_TTL_SECONDS = 60
+_BOT_MESSAGE_TEMPLATE_TTL_SECONDS = 60
+_PRODUCT_LIST_TTL_SECONDS = 5
+_SALE_PRODUCT_LIST_TTL_SECONDS = 5
+_FOLDER_LIST_TTL_SECONDS = 30
 _USER_CACHE_TTL_SECONDS = 30
 _user_lang_cache: Dict[int, Tuple[str, float]] = {}
 
@@ -348,6 +416,22 @@ def _cache_get(cache: Dict[int, Tuple[Any, float]], key: int, ttl: int):
 
 def _cache_set(cache: Dict[int, Tuple[Any, float]], key: int, value: Any):
     cache[key] = (value, time.time())
+
+
+def _clone_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [dict(row) for row in rows]
+
+
+def _list_cache_get(cache: Tuple[Optional[List[Dict[str, Any]]], float], ttl: int) -> Optional[List[Dict[str, Any]]]:
+    rows, cached_at = cache
+    if rows is not None and (time.time() - cached_at <= ttl):
+        return _clone_rows(rows)
+    return None
+
+
+def _list_cache_stale(cache: Tuple[Optional[List[Dict[str, Any]]], float]) -> Optional[List[Dict[str, Any]]]:
+    rows, _ = cache
+    return _clone_rows(rows) if rows is not None else None
 
 
 def _parse_bool(value: Any, default: bool = True) -> bool:
@@ -572,13 +656,20 @@ async def update_balance_usdt(user_id: int, amount: float):
 
 # Product functions
 async def get_products():
+    global _product_list_cache
+
+    cached_products = _list_cache_get(_product_list_cache, _PRODUCT_LIST_TTL_SECONDS)
+    if cached_products is not None:
+        return cached_products
+
     def _rpc():
         return get_supabase_client().rpc("get_products_with_stock").execute()
 
     try:
-        resp = await _to_thread(_rpc)
+        resp = await _to_thread(_rpc, retry_transient=True)
         rows = resp.data or []
-        position_map = await _fetch_product_positions([row.get("id") for row in rows])
+        needs_position_fetch = any("sort_position" not in row for row in rows)
+        position_map = await _fetch_product_positions([row.get("id") for row in rows]) if needs_position_fetch else {}
         products = []
         for row in rows:
             product_id = row.get("id")
@@ -598,8 +689,17 @@ async def get_products():
                 "sort_position": position_map.get(str(product_id), _safe_optional_int(row.get("sort_position"))),
                 "bot_folder_id": _safe_optional_int(row.get("bot_folder_id")),
             })
-        return _sort_products_by_position(products)
-    except Exception:
+        products = _sort_products_by_position(products)
+        _product_list_cache = (_clone_rows(products), time.time())
+        return products
+    except Exception as exc:
+        stale_products = _list_cache_stale(_product_list_cache)
+        if _is_transient_network_error(exc):
+            if stale_products is not None:
+                logger.warning("Using stale product catalog after Supabase read error: %s", exc)
+                return stale_products
+            logger.warning("Product catalog RPC read failed; attempting table fallback: %s", exc)
+
         # Fallback to per-product counting if RPC not available
         def _fetch():
             try:
@@ -616,34 +716,58 @@ async def get_products():
                         "id, name, price, description, price_usdt, format_data"
                     ).order("id").execute()
 
-        resp = await _to_thread(_fetch)
-        rows = resp.data or []
-        products = []
-        for row in rows:
-            product_id = row.get("id")
+        try:
+            resp = await _to_thread(_fetch, retry_transient=True)
+            rows = resp.data or []
+            products = []
+            for row in rows:
+                product_id = row.get("id")
 
-            def _stock():
-                return _get_table("stock").select("id").eq("product_id", product_id).eq("sold", False).execute()
+                def _stock():
+                    return _get_table("stock").select("id").eq("product_id", product_id).eq("sold", False).execute()
 
-            stock_resp = await _to_thread(_stock)
-            stock_count = len(stock_resp.data or [])
-            products.append({
-                "id": product_id,
-                "name": row.get("name"),
-                "telegram_icon": row.get("telegram_icon") or "",
-                "telegram_icon_custom_emoji_id": row.get("telegram_icon_custom_emoji_id") or "",
-                "price": _safe_int(row.get("price")),
-                "description": row.get("description"),
-                "stock": stock_count,
-                "price_usdt": _safe_float(row.get("price_usdt")),
-                "format_data": row.get("format_data"),
-                "price_tiers": _safe_list(row.get("price_tiers")),
-                "promo_buy_quantity": _safe_int(row.get("promo_buy_quantity")),
-                "promo_bonus_quantity": _safe_int(row.get("promo_bonus_quantity")),
-                "sort_position": _safe_optional_int(row.get("sort_position")),
-                "bot_folder_id": _safe_optional_int(row.get("bot_folder_id")),
-            })
-        return _sort_products_by_position(products)
+                try:
+                    stock_resp = await _to_thread(_stock, retry_transient=True)
+                    stock_count = len(stock_resp.data or [])
+                except Exception as stock_exc:
+                    if not _is_transient_network_error(stock_exc):
+                        raise
+                    logger.warning(
+                        "Stock count read failed for product %s; using zero for catalog fallback: %s",
+                        product_id,
+                        stock_exc,
+                    )
+                    stock_count = 0
+
+                products.append({
+                    "id": product_id,
+                    "name": row.get("name"),
+                    "telegram_icon": row.get("telegram_icon") or "",
+                    "telegram_icon_custom_emoji_id": row.get("telegram_icon_custom_emoji_id") or "",
+                    "price": _safe_int(row.get("price")),
+                    "description": row.get("description"),
+                    "stock": stock_count,
+                    "price_usdt": _safe_float(row.get("price_usdt")),
+                    "format_data": row.get("format_data"),
+                    "price_tiers": _safe_list(row.get("price_tiers")),
+                    "promo_buy_quantity": _safe_int(row.get("promo_buy_quantity")),
+                    "promo_bonus_quantity": _safe_int(row.get("promo_bonus_quantity")),
+                    "sort_position": _safe_optional_int(row.get("sort_position")),
+                    "bot_folder_id": _safe_optional_int(row.get("bot_folder_id")),
+                })
+            products = _sort_products_by_position(products)
+            _product_list_cache = (_clone_rows(products), time.time())
+            return products
+        except Exception as fallback_exc:
+            stale_products = _list_cache_stale(_product_list_cache)
+            if _is_transient_network_error(fallback_exc):
+                logger.warning(
+                    "Product catalog fallback failed after transient Supabase error; returning %s: %s",
+                    "stale cache" if stale_products is not None else "empty catalog",
+                    fallback_exc,
+                )
+                return stale_products or []
+            raise
 
 
 async def search_products(query: str, limit: int = 10) -> List[Dict[str, Any]]:
@@ -767,12 +891,26 @@ async def get_admin_ops_health_snapshot(low_stock_threshold: int = 5) -> Dict[st
 
 
 async def get_bot_product_folders():
+    global _folder_list_cache
+
+    cached_folders = _list_cache_get(_folder_list_cache, _FOLDER_LIST_TTL_SECONDS)
+    if cached_folders is not None:
+        return cached_folders
+
     def _fetch():
         return _get_table("bot_product_folders").select("id, name, sort_position").order("id").execute()
 
     try:
-        resp = await _to_thread(_fetch)
-    except Exception:
+        resp = await _to_thread(_fetch, retry_transient=True)
+    except Exception as exc:
+        stale_folders = _list_cache_stale(_folder_list_cache)
+        if _is_transient_network_error(exc):
+            logger.warning(
+                "Bot product folder read failed; returning %s: %s",
+                "stale cache" if stale_folders is not None else "empty folder list",
+                exc,
+            )
+            return stale_folders or []
         return []
 
     folders = []
@@ -782,7 +920,9 @@ async def get_bot_product_folders():
             "name": row.get("name"),
             "sort_position": _safe_optional_int(row.get("sort_position")),
         })
-    return _sort_folders_by_position(folders)
+    folders = _sort_folders_by_position(folders)
+    _folder_list_cache = (_clone_rows(folders), time.time())
+    return folders
 
 
 async def get_product(product_id: int):
@@ -869,14 +1009,28 @@ async def get_product(product_id: int):
 
 
 async def get_active_sale_products() -> List[Dict[str, Any]]:
+    global _sale_product_list_cache
+
+    cached_products = _list_cache_get(_sale_product_list_cache, _SALE_PRODUCT_LIST_TTL_SECONDS)
+    if cached_products is not None:
+        return cached_products
+
     def _rpc():
         return get_supabase_client().rpc("get_active_sale_products").execute()
 
     try:
-        resp = await _to_thread(_rpc)
+        resp = await _to_thread(_rpc, retry_transient=True)
     except Exception as exc:
         if _is_missing_rpc_error_message(str(exc)):
             return []
+        stale_products = _list_cache_stale(_sale_product_list_cache)
+        if _is_transient_network_error(exc):
+            logger.warning(
+                "Active Sale catalog read failed; returning %s: %s",
+                "stale cache" if stale_products is not None else "no Sale items",
+                exc,
+            )
+            return stale_products or []
         raise
 
     products = [
@@ -885,6 +1039,7 @@ async def get_active_sale_products() -> List[Dict[str, Any]]:
         if isinstance(row, dict)
     ]
     products.sort(key=_sale_product_sort_key)
+    _sale_product_list_cache = (_clone_rows(products), time.time())
     return products
 
 
@@ -906,7 +1061,9 @@ async def get_active_sale_product(sale_item_id: int) -> Optional[Dict[str, Any]]
         if isinstance(row, dict) and row:
             return _normalize_sale_product_row(row)
     except Exception as exc:
-        if not _is_missing_rpc_error_message(str(exc)):
+        if _is_transient_network_error(exc):
+            logger.warning("Active Sale product read failed; falling back to cached list: %s", exc)
+        elif not _is_missing_rpc_error_message(str(exc)):
             raise
 
     for product in await get_active_sale_products():
@@ -2477,7 +2634,19 @@ async def get_setting(key: str, default: str = ""):
     def _fetch():
         return _get_table("settings").select("value").eq("key", key).limit(1).execute()
 
-    resp = await _to_thread(_fetch)
+    try:
+        resp = await _to_thread(_fetch, retry_transient=True)
+    except Exception as exc:
+        if _is_transient_network_error(exc):
+            logger.warning(
+                "Setting %s read failed; using %s: %s",
+                key,
+                "stale cache" if cached is not None else "default",
+                exc,
+            )
+            return cached if cached is not None else default
+        raise
+
     data = resp.data or []
     value = data[0].get("value") if data else default
     _settings_cache["values"][key] = value
@@ -2492,6 +2661,70 @@ async def set_setting(key: str, value: str):
     await _to_thread(_upsert)
     _settings_cache["values"][key] = value
     _settings_cache["ts"] = time.time()
+
+
+def _normalize_bot_message_template(row: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "template_key": str(row.get("template_key") or ""),
+        "language": str(row.get("language") or "vi"),
+        "title": str(row.get("title") or ""),
+        "description": str(row.get("description") or ""),
+        "body_text": str(row.get("body_text") or ""),
+        "custom_emoji_id": _safe_custom_emoji_id(row.get("custom_emoji_id")),
+        "fallback_emoji": str(row.get("fallback_emoji") or ""),
+        "enabled": _parse_bool(row.get("enabled"), True),
+        "variables": _safe_list(row.get("variables")),
+        "updated_at": row.get("updated_at"),
+    }
+
+
+async def get_bot_message_template(template_key: str, language: str = "vi") -> Optional[Dict[str, Any]]:
+    clean_key = str(template_key or "").strip()
+    clean_language = str(language or "vi").strip().lower()
+    if clean_language not in ("vi", "en"):
+        clean_language = "vi"
+    if not clean_key:
+        return None
+
+    cache_key = f"{clean_language}:{clean_key}"
+    now = time.time()
+    cached = _bot_message_template_cache.get(cache_key)
+    if cached and (now - cached[1] <= _BOT_MESSAGE_TEMPLATE_TTL_SECONDS):
+        return cached[0]
+
+    def _fetch(lang: str):
+        return (
+            _get_table("bot_message_templates")
+            .select("template_key, language, title, description, body_text, custom_emoji_id, fallback_emoji, enabled, variables, updated_at")
+            .eq("template_key", clean_key)
+            .eq("language", lang)
+            .limit(1)
+            .execute()
+        )
+
+    template: Optional[Dict[str, Any]] = None
+    try:
+        resp = await _to_thread(_fetch, clean_language, retry_transient=True)
+        rows = resp.data or []
+        if not rows and clean_language != "vi":
+            resp = await _to_thread(_fetch, "vi", retry_transient=True)
+            rows = resp.data or []
+        if rows:
+            template = _normalize_bot_message_template(rows[0])
+    except Exception as exc:
+        if _is_transient_network_error(exc):
+            if cached:
+                logger.warning("Using stale bot message template %s after Supabase read error: %s", cache_key, exc)
+                return cached[0]
+            logger.warning("Bot message template %s read failed; using source fallback: %s", cache_key, exc)
+            template = None
+        elif not _is_missing_relation_error_message(str(exc)):
+            raise
+        else:
+            template = None
+
+    _bot_message_template_cache[cache_key] = (template, now)
+    return template
 
 
 async def get_ui_flags() -> Dict[str, bool]:

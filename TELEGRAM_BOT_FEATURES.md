@@ -11,6 +11,9 @@ Phạm vi: project Python Telegram Bot ở root repository, không bao gồm `ad
 - Runtime settings có thể lấy từ env và bảng `settings`.
 - Có hỗ trợ `uvloop` trên nền tảng không phải Windows.
 - Khi start, Bot chạy Telegram polling và tạo background task cho SePay/Binance checker.
+- Callback query answer thường chạy nền với timeout ngắn để inline button không bị cảm giác "quay lâu"; cấu hình qua `BOT_CALLBACK_ANSWER_BACKGROUND` và `BOT_CALLBACK_ANSWER_TIMEOUT`.
+- Catalog/folder/Sale list có cache ngắn hạn để giảm round-trip Supabase khi user bấm qua lại menu.
+- Các truy vấn đọc Supabase cho catalog/settings/template có retry ngắn và stale-cache fallback; lỗi mạng tạm thời như `httpx.ReadError` không còn làm vỡ toàn bộ handler Shop.
 
 ## Lớp database
 
@@ -54,6 +57,23 @@ Phạm vi: project Python Telegram Bot ở root repository, không bao gồm `ad
   - hỗ trợ
 - Panel hỗ trợ đọc `admin_contact` và nhiều link support từ settings.
 - Có callback quay về menu chính và xóa message.
+
+## Bot message templates
+
+- Một số message traffic cao có thể chỉnh từ Dashboard thay vì sửa code:
+  - welcome
+  - shop intro
+  - product/Sale payment options
+  - quantity quick/manual prompts
+  - direct payment options
+  - Sale intro/empty
+  - support panel
+  - history empty
+  - feature disabled
+- Template hỗ trợ biến như `{name}`.
+- Mỗi template có thể gắn Telegram custom emoji ID để Bot render emoji native ở đầu message.
+- Trong `body_text`, admin có thể đặt custom emoji ở từng dòng/vị trí bằng cú pháp `{emoji:TELEGRAM_CUSTOM_EMOJI_ID}`.
+- Bot cache template trong thời gian ngắn để không làm chậm mỗi lần gửi message.
 
 ## Danh mục shop
 

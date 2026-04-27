@@ -17,8 +17,9 @@ from helpers.ui import (
 )
 from helpers.history_menu import build_history_menu
 from helpers.menu import delete_last_menu_message, set_last_menu_message, clear_last_menu_message
-from helpers.shop_catalog import build_shop_top_level_view
-from helpers.telegram_resilience import safe_answer_callback_query
+from helpers.bot_messages import edit_bot_message_text, reply_bot_message, send_bot_message
+from helpers.shop_catalog import build_shop_top_level_message
+from helpers.telegram_resilience import edit_or_reply_callback_message, safe_answer_callback_query
 from locales import get_text
 
 
@@ -164,16 +165,23 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # User đã chọn ngôn ngữ rồi, hiện giao diện bình thường
     welcome_text = get_text(lang, "welcome").format(name=user.first_name)
-    select_text = await get_shop_menu_text(lang)
 
-    await update.message.reply_text(welcome_text, reply_markup=await get_user_keyboard(lang))
+    await reply_bot_message(
+        update.message,
+        "welcome",
+        lang,
+        welcome_text,
+        variables={"name": user.first_name or ""},
+        fallback_emoji="👋",
+        reply_markup=await get_user_keyboard(lang),
+    )
     if not await is_feature_enabled("show_shop"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.")
+        await reply_bot_message(update.message, "feature_disabled", lang, "Tính năng này đang tạm tắt.", fallback_emoji="⚠️")
         return
 
-    text, markup = await build_shop_top_level_view(lang, page=0)
+    rendered, markup = await build_shop_top_level_message(lang, page=0)
     menu_msg = await update.message.reply_text(
-        text,
+        **rendered.to_telegram_kwargs(),
         reply_markup=markup,
     )
     set_last_menu_message(context, menu_msg)
@@ -232,7 +240,8 @@ async def settings_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_change_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Hiện menu đổi ngôn ngữ"""
     if not await is_feature_enabled("show_language"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.")
+        lang = await get_user_language(update.effective_user.id)
+        await reply_bot_message(update.message, "feature_disabled", lang, "Tính năng này đang tạm tắt.", fallback_emoji="⚠️")
         return
     await delete_last_menu_message(context, update.effective_chat.id)
     keyboard = [
@@ -263,21 +272,22 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(f"{lang_text}\n\n{welcome_text}")
 
     # Hiện danh sách sản phẩm với reply keyboard
-    await context.bot.send_message(
+    await send_bot_message(
+        context.bot,
         chat_id=query.message.chat_id,
-        text=select_text,
+        template_key="shop_intro",
+        lang=lang,
+        fallback=select_text,
+        fallback_emoji="🛍",
         reply_markup=await get_user_keyboard(lang)
     )
     if not await is_feature_enabled("show_shop"):
-        await context.bot.send_message(
-            chat_id=query.message.chat_id,
-            text="⚠️ Tính năng này đang tạm tắt."
-        )
+        await send_bot_message(context.bot, query.message.chat_id, "feature_disabled", lang, "Tính năng này đang tạm tắt.", fallback_emoji="⚠️")
         return
-    text, markup = await build_shop_top_level_view(lang, page=0)
+    rendered, markup = await build_shop_top_level_message(lang, page=0)
     menu_msg = await context.bot.send_message(
         chat_id=query.message.chat_id,
-        text=text,
+        **rendered.to_telegram_kwargs(),
         reply_markup=markup
     )
     set_last_menu_message(context, menu_msg)
@@ -287,13 +297,26 @@ async def handle_history_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     lang = await get_user_language(user_id)
     if not await is_feature_enabled("show_history"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=await get_user_keyboard(lang))
+        await reply_bot_message(
+            update.message,
+            "feature_disabled",
+            lang,
+            "Tính năng này đang tạm tắt.",
+            fallback_emoji="⚠️",
+            reply_markup=await get_user_keyboard(lang),
+        )
         return
     await delete_last_menu_message(context, update.effective_chat.id)
     orders = await get_user_orders(user_id)
 
     if not orders:
-        await update.message.reply_text(get_text(lang, "history_empty"))
+        await reply_bot_message(
+            update.message,
+            "history_empty",
+            lang,
+            get_text(lang, "history_empty"),
+            fallback_emoji="📜",
+        )
         return
 
     text, reply_markup, _, _ = build_history_menu(orders, lang, page=0)
@@ -309,7 +332,14 @@ async def handle_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     lang = await get_user_language(user_id)
     if not await is_feature_enabled("show_balance"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=await get_user_keyboard(lang))
+        await reply_bot_message(
+            update.message,
+            "feature_disabled",
+            lang,
+            "Tính năng này đang tạm tắt.",
+            fallback_emoji="⚠️",
+            reply_markup=await get_user_keyboard(lang),
+        )
         return
     await delete_last_menu_message(context, update.effective_chat.id)
     balance = await get_balance(user_id)
@@ -334,7 +364,14 @@ async def handle_support_text(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = update.effective_user.id
     lang = await get_user_language(user_id)
     if not await is_feature_enabled("show_support"):
-        await update.message.reply_text("⚠️ Tính năng này đang tạm tắt.", reply_markup=await get_user_keyboard(lang))
+        await reply_bot_message(
+            update.message,
+            "feature_disabled",
+            lang,
+            "Tính năng này đang tạm tắt.",
+            fallback_emoji="⚠️",
+            reply_markup=await get_user_keyboard(lang),
+        )
         return
     pressed_text = (update.message.text or "").strip()
     pressed_legacy_icon = pressed_text.startswith("🆘")
@@ -343,24 +380,26 @@ async def handle_support_text(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     support_text = await get_support_panel_text(lang)
 
-    if not contacts and not str(await get_setting("support_panel_text", "") or "").strip():
-        text = (
-            "❌ Chưa cài đặt liên hệ hỗ trợ. Vui lòng báo admin cập nhật mục Support contacts trong Dashboard."
-            if lang != "en"
-            else "❌ Support contact is not configured. Please ask admin to set Support contacts in Dashboard settings."
-        )
-        await update.message.reply_text(text, reply_markup=await get_user_keyboard(lang))
-        return
-
     if contacts:
         buttons = [InlineKeyboardButton(label, url=url) for label, url in contacts]
         keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
-        await update.message.reply_text(
+        await reply_bot_message(
+            update.message,
+            "support_panel",
+            lang,
             support_text,
+            fallback_emoji="💬",
             reply_markup=InlineKeyboardMarkup(keyboard),
         )
     else:
-        await update.message.reply_text(support_text, reply_markup=await get_user_keyboard(lang))
+        await reply_bot_message(
+            update.message,
+            "support_panel",
+            lang,
+            support_text,
+            fallback_emoji="💬",
+            reply_markup=await get_user_keyboard(lang),
+        )
 
     # Telegram may keep showing old reply-keyboard buttons until a new keyboard is sent.
     # If user pressed the legacy icon, push the refreshed keyboard once.
@@ -375,7 +414,7 @@ async def handle_support_callback(update: Update, context: ContextTypes.DEFAULT_
     user_id = query.from_user.id
     lang = await get_user_language(user_id)
     if not await is_feature_enabled("show_support"):
-        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.")
+        await edit_bot_message_text(query, "feature_disabled", lang, "Tính năng này đang tạm tắt.", fallback_emoji="⚠️")
         return
 
     contact = _normalize_admin_contact(await get_setting("admin_contact", ""))
@@ -384,22 +423,27 @@ async def handle_support_callback(update: Update, context: ContextTypes.DEFAULT_
     delete_label = "🗑 Delete" if lang == "en" else "🗑 Xóa"
     delete_row = [InlineKeyboardButton(delete_label, callback_data="delete_msg")]
 
-    if not contacts and not str(await get_setting("support_panel_text", "") or "").strip():
-        text = (
-            "❌ Chưa cài đặt liên hệ hỗ trợ. Vui lòng báo admin cập nhật mục Support contacts trong Dashboard."
-            if lang != "en"
-            else "❌ Support contact is not configured. Please ask admin to set Support contacts in Dashboard settings."
-        )
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([delete_row]))
-        return
-
     if contacts:
         buttons = [InlineKeyboardButton(label, url=url) for label, url in contacts]
         keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
         keyboard.append(delete_row)
-        await query.edit_message_text(support_text, reply_markup=InlineKeyboardMarkup(keyboard))
+        await edit_bot_message_text(
+            query,
+            "support_panel",
+            lang,
+            support_text,
+            fallback_emoji="💬",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
     else:
-        await query.edit_message_text(support_text, reply_markup=InlineKeyboardMarkup([delete_row]))
+        await edit_bot_message_text(
+            query,
+            "support_panel",
+            lang,
+            support_text,
+            fallback_emoji="💬",
+            reply_markup=InlineKeyboardMarkup([delete_row]),
+        )
 
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -409,11 +453,11 @@ async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = await get_user_language(user_id)
 
     if not await is_feature_enabled("show_shop"):
-        await query.edit_message_text("⚠️ Tính năng này đang tạm tắt.")
+        await edit_bot_message_text(query, "feature_disabled", lang, "Tính năng này đang tạm tắt.", fallback_emoji="⚠️")
         return
-    text, markup = await build_shop_top_level_view(lang, page=0)
+    rendered, markup = await build_shop_top_level_message(lang, page=0)
     await query.edit_message_text(
-        text,
+        **rendered.to_telegram_kwargs(),
         reply_markup=markup
     )
     set_last_menu_message(context, query.message)
@@ -425,5 +469,9 @@ async def delete_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.delete()
     except Exception:
         # Fallback if deletion is not allowed
-        await query.edit_message_text("✅ Đã xóa.")
+        await edit_or_reply_callback_message(
+            query,
+            text="✅ Đã xóa.",
+            action="delete_message.fallback",
+        )
     clear_last_menu_message(context, query.message)

@@ -1,5 +1,6 @@
 ﻿from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 import math
+from helpers.bot_messages import get_cached_common_button_label
 from helpers.telegram_ui import (
     DEFAULT_SALE_CUSTOM_EMOJI_ID,
     build_folder_button_label as _ui_folder_button_label,
@@ -8,6 +9,7 @@ from helpers.telegram_ui import (
     fit_button_text,
     format_vnd_dot,
     get_product_custom_emoji_id,
+    normalize_custom_emoji_id,
     normalize_product_icon,
 )
 
@@ -56,8 +58,9 @@ def _safe_optional_int(value):
     except (TypeError, ValueError):
         return None
 
-def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None):
+def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None, labels: dict | None = None):
     flags = flags or {}
+    labels = labels or {}
     def enabled(key: str, default: bool = True) -> bool:
         return bool(flags.get(key, default))
 
@@ -80,34 +83,34 @@ def user_reply_keyboard(lang: str = 'vi', flags: dict | None = None):
         # English: no direct deposit button in reply keyboard; checkout offers direct rails when needed.
         buttons: list[str | KeyboardButton] = []
         if enabled("show_shop"):
-            buttons.append("🛒 Shop")
+            buttons.append(labels.get("shop") or "🛒 Shop")
         if enabled("show_balance"):
-            buttons.append("💰 Balance")
+            buttons.append(labels.get("balance") or "💰 Balance")
         if enabled("show_history"):
-            buttons.append("📜 History")
+            buttons.append(labels.get("history") or "📜 History")
         if enabled("show_support"):
-            buttons.append("💬 Support")
+            buttons.append(labels.get("support") or "💬 Support")
         if enabled("show_language"):
-            buttons.append("🌐 Language")
+            buttons.append(labels.get("language") or "🌐 Language")
         keyboard = build_rows(buttons)
         placeholder = "Choose an option below"
     else:
         # Vietnamese: no legacy Binance deposit button in reply keyboard; checkout offers direct rails when needed.
         buttons: list[str | KeyboardButton] = []
         if enabled("show_shop"):
-            buttons.append("🛒 Mua hàng")
+            buttons.append(labels.get("shop") or "🛒 Mua hàng")
         if enabled("show_balance"):
-            buttons.append("💰 Số dư")
+            buttons.append(labels.get("balance") or "💰 Số dư")
         if enabled("show_deposit"):
-            buttons.append("➕ Nạp tiền")
+            buttons.append(labels.get("deposit") or "➕ Nạp tiền")
         if enabled("show_withdraw"):
-            buttons.append("💸 Rút tiền")
+            buttons.append(labels.get("withdraw") or "💸 Rút tiền")
         if enabled("show_history"):
-            buttons.append("📜 Lịch sử mua")
+            buttons.append(labels.get("history") or "📜 Lịch sử mua")
         if enabled("show_support"):
-            buttons.append("💬 Hỗ trợ")
+            buttons.append(labels.get("support") or "💬 Hỗ trợ")
         if enabled("show_language"):
-            buttons.append("🌐 Ngôn ngữ")
+            buttons.append(labels.get("language") or "🌐 Ngôn ngữ")
         keyboard = build_rows(buttons)
         placeholder = "Chọn một nút bên dưới"
     return ReplyKeyboardMarkup(
@@ -133,13 +136,17 @@ def admin_reply_keyboard():
         input_field_placeholder="Chọn một nút bên dưới",
     )
 
-def main_menu_keyboard():
+def main_menu_keyboard(sale_button_text: str = "SALE", sale_button_custom_emoji_id: str = DEFAULT_SALE_CUSTOM_EMOJI_ID):
+    sale_button_kwargs = {}
+    safe_sale_custom_emoji_id = normalize_custom_emoji_id(sale_button_custom_emoji_id)
+    if safe_sale_custom_emoji_id:
+        sale_button_kwargs["icon_custom_emoji_id"] = safe_sale_custom_emoji_id
     keyboard = [
-        [InlineKeyboardButton("SALE", callback_data="sale_0", icon_custom_emoji_id=DEFAULT_SALE_CUSTOM_EMOJI_ID)],
-        [InlineKeyboardButton("🛒 Mua hàng", callback_data="shop")],
-        [InlineKeyboardButton("💰 Nạp tiền", callback_data="deposit")],
-        [InlineKeyboardButton("👤 Tài khoản", callback_data="account")],
-        [InlineKeyboardButton("📜 Đơn đã mua", callback_data="history")],
+        [InlineKeyboardButton(fit_button_text(sale_button_text or "SALE"), callback_data="sale_0", **sale_button_kwargs)],
+        [InlineKeyboardButton(get_cached_common_button_label("button.main_shop", "vi"), callback_data="shop")],
+        [InlineKeyboardButton(get_cached_common_button_label("button.main_deposit", "vi"), callback_data="deposit")],
+        [InlineKeyboardButton(get_cached_common_button_label("button.account", "vi"), callback_data="account")],
+        [InlineKeyboardButton(get_cached_common_button_label("button.history", "vi"), callback_data="history")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -170,15 +177,28 @@ def admin_sold_codes_keyboard(products):
     keyboard.append([InlineKeyboardButton("🔙 Quay lại", callback_data="admin")])
     return InlineKeyboardMarkup(keyboard)
 
-def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int = 10, folders=None, has_sale: bool = False):
+def products_keyboard(
+    products,
+    lang: str = 'vi',
+    page: int = 0,
+    page_size: int = 10,
+    folders=None,
+    has_sale: bool = False,
+    sale_button_text: str = "",
+    sale_button_custom_emoji_id: str = "",
+):
     keyboard = []
     if has_sale:
-        sale_label = "SALE" if lang == "en" else "SALE đang mở"
+        sale_label = fit_button_text(sale_button_text or ("SALE" if lang == "en" else "SALE đang mở"))
+        sale_button_kwargs = {}
+        safe_sale_custom_emoji_id = normalize_custom_emoji_id(sale_button_custom_emoji_id)
+        if safe_sale_custom_emoji_id:
+            sale_button_kwargs["icon_custom_emoji_id"] = safe_sale_custom_emoji_id
         keyboard.append([
             InlineKeyboardButton(
                 sale_label,
                 callback_data="sale_0",
-                icon_custom_emoji_id=DEFAULT_SALE_CUSTOM_EMOJI_ID,
+                **sale_button_kwargs,
             )
         ])
     folders = folders or []
@@ -225,8 +245,8 @@ def products_keyboard(products, lang: str = 'vi', page: int = 0, page_size: int 
             InlineKeyboardButton(next_text, callback_data=f"shop_{next_page}"),
         ])
 
-    refresh_text = "🔄 Refresh" if lang == 'en' else "🔄 Cập nhật"
-    delete_text = "🗑 Delete" if lang == 'en' else "🗑 Xóa"
+    refresh_text = get_cached_common_button_label("button.refresh", lang)
+    delete_text = get_cached_common_button_label("button.delete", lang)
     keyboard.append([InlineKeyboardButton(refresh_text, callback_data=f"shop_{safe_page}")])
     keyboard.append([InlineKeyboardButton(delete_text, callback_data="delete_msg")])
     return InlineKeyboardMarkup(keyboard)
@@ -248,8 +268,8 @@ def sale_products_keyboard(products, lang: str = "vi", page: int = 0, page_size:
         keyboard.append([_product_inline_button(product, label, callback_data=f"salebuy_{sale_item_id}")])
 
     if total_pages > 1:
-        prev_text = "⬅️ Prev" if lang == "en" else "⬅️ Trước"
-        next_text = "Next ➡️" if lang == "en" else "Sau ➡️"
+        prev_text = get_cached_common_button_label("button.prev", lang)
+        next_text = get_cached_common_button_label("button.next", lang)
         prev_page = safe_page - 1 if safe_page > 0 else safe_page
         next_page = safe_page + 1 if safe_page < total_pages - 1 else safe_page
         keyboard.append([
@@ -258,9 +278,9 @@ def sale_products_keyboard(products, lang: str = "vi", page: int = 0, page_size:
             InlineKeyboardButton(next_text, callback_data=f"sale_{next_page}"),
         ])
 
-    refresh_text = "🔄 Refresh" if lang == "en" else "🔄 Cập nhật"
-    back_text = "🔙 Shop" if lang == "en" else "🔙 Shop"
-    delete_text = "🗑 Delete" if lang == "en" else "🗑 Xóa"
+    refresh_text = get_cached_common_button_label("button.refresh", lang)
+    back_text = get_cached_common_button_label("button.back_shop", lang)
+    delete_text = get_cached_common_button_label("button.delete", lang)
     keyboard.append([InlineKeyboardButton(refresh_text, callback_data=f"sale_{safe_page}")])
     keyboard.append([InlineKeyboardButton(back_text, callback_data="shop")])
     keyboard.append([InlineKeyboardButton(delete_text, callback_data="delete_msg")])
@@ -290,8 +310,8 @@ def folder_products_keyboard(
         keyboard.append([_product_inline_button(product, label, callback_data=f"buy_{product['id']}")])
 
     if total_pages > 1:
-        prev_text = "⬅️ Prev" if lang == "en" else "⬅️ Trước"
-        next_text = "Next ➡️" if lang == "en" else "Sau ➡️"
+        prev_text = get_cached_common_button_label("button.prev", lang)
+        next_text = get_cached_common_button_label("button.next", lang)
         prev_page = safe_page - 1 if safe_page > 0 else safe_page
         next_page = safe_page + 1 if safe_page < total_pages - 1 else safe_page
         keyboard.append([
@@ -300,14 +320,14 @@ def folder_products_keyboard(
             InlineKeyboardButton(next_text, callback_data=f"shopfolder_{folder_id}_{next_page}_{origin_top_page}"),
         ])
 
-    back_text = "🔙 Back" if lang == "en" else "🔙 Quay lại"
-    delete_text = "🗑 Delete" if lang == "en" else "🗑 Xóa"
+    back_text = get_cached_common_button_label("button.back", lang)
+    delete_text = get_cached_common_button_label("button.delete", lang)
     keyboard.append([InlineKeyboardButton(back_text, callback_data=f"shop_{max(0, origin_top_page)}")])
     keyboard.append([InlineKeyboardButton(delete_text, callback_data="delete_msg")])
     return InlineKeyboardMarkup(keyboard)
 
 def confirm_buy_keyboard(product_id, stock=1, max_can_buy=1):
-    keyboard = [[InlineKeyboardButton("❌ Hủy", callback_data="shop")]]
+    keyboard = [[InlineKeyboardButton(get_cached_common_button_label("reply.cancel", "vi") or "❌ Hủy", callback_data="shop")]]
     return InlineKeyboardMarkup(keyboard)
 
 def deposit_amounts_keyboard():
@@ -318,14 +338,14 @@ def deposit_amounts_keyboard():
         if i + 1 < len(amounts):
             row.append(InlineKeyboardButton(f"{amounts[i+1]:,}đ", callback_data=f"deposit_{amounts[i+1]}"))
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("🗑 Xóa", callback_data="delete_msg")])
+    keyboard.append([InlineKeyboardButton(get_cached_common_button_label("button.delete", "vi"), callback_data="delete_msg")])
     return InlineKeyboardMarkup(keyboard)
 
 def back_keyboard(callback_data="back_main"):
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Quay lại", callback_data=callback_data)]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(get_cached_common_button_label("button.back", "vi"), callback_data=callback_data)]])
 
 def delete_keyboard():
-    return InlineKeyboardMarkup([[InlineKeyboardButton("🗑 Xóa", callback_data="delete_msg")]])
+    return InlineKeyboardMarkup([[InlineKeyboardButton(get_cached_common_button_label("button.delete", "vi"), callback_data="delete_msg")]])
 
 def admin_products_keyboard(products):
     keyboard = []

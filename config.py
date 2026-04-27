@@ -25,11 +25,14 @@ BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
 BINANCE_DIRECT_ENABLED = os.getenv("BINANCE_DIRECT_ENABLED", "false").lower() in ("1", "true", "yes", "on")
 BINANCE_DIRECT_COIN = os.getenv("BINANCE_DIRECT_COIN", "USDT")
 BINANCE_DIRECT_NETWORK = os.getenv("BINANCE_DIRECT_NETWORK", "")
+BINANCE_DIRECT_ADDRESS = os.getenv("BINANCE_DIRECT_ADDRESS", "")
+BINANCE_DIRECT_ADDRESS_TAG = os.getenv("BINANCE_DIRECT_ADDRESS_TAG", "")
+BINANCE_PAY_ID = os.getenv("BINANCE_PAY_ID", "")
 BINANCE_DIRECT_RATE = os.getenv("BINANCE_DIRECT_RATE", os.getenv("USDT_RATE", "25000"))
 USDT_RATE = int(os.getenv("USDT_RATE", "25000"))  # Tỷ giá 1 USDT = ? VND
 
 # Payment mode:
-# - direct: luôn tạo VietQR khi mua hàng (không dùng balance)
-# - hybrid: chỉ tạo VietQR khi thiếu balance
+# - direct: external-only checkout. Vietnamese -> VietQR, English -> Binance.
+# - hybrid: user chooses Wallet or external rail. Vietnamese -> Wallet/VietQR, English -> Wallet/Binance.
 # - balance: phải nạp balance trước khi mua
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "hybrid").lower()

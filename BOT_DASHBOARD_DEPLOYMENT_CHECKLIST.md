@@ -36,6 +36,7 @@ Mục tiêu: giữ Telegram Bot và Bot Admin Dashboard đồng bộ về schema
    - `supabase_schema_product_soft_delete.sql`
    - `supabase_schema_bot_product_folders.sql`
    - `supabase_schema_bot_product_rpc_canonical.sql`
+   - `supabase_schema_bot_message_templates.sql`
 4. Fulfillment và delivery:
    - `supabase_schema_bot_balance_purchase_fulfillment.sql`
    - `supabase_schema_direct_order_fulfillment.sql`
@@ -55,6 +56,7 @@ Mục tiêu: giữ Telegram Bot và Bot Admin Dashboard đồng bộ về schema
 
 - `public.get_products_with_stock()`
 - `public.get_product_with_stock(bigint)`
+- `public.bot_message_templates`
 
 Contract cần có:
 
@@ -67,6 +69,7 @@ Contract cần có:
 - promo buy/bonus quantity
 - website compatibility fields
 - stock count
+- editable Bot message copy/custom emoji ID
 
 Nếu apply `supabase_schema_product_soft_delete.sql` sau all-in-one/canonical, RPC có thể mất `bot_folder_id`. Khi đó cần apply lại `supabase_schema_all_in_one.sql` hoặc file canonical.
 
@@ -78,7 +81,11 @@ Nếu apply `supabase_schema_product_soft_delete.sql` sau all-in-one/canonical, 
 - `ADMIN_IDS`
 - `SUPABASE_URL`
 - `SUPABASE_SECRET_KEY`
+- `SUPABASE_NETWORK_RETRY_ATTEMPTS=2`
+- `SUPABASE_NETWORK_RETRY_DELAY=0.35`
 - SePay/Binance env nếu không cấu hình qua bảng `settings`
+  - Với Binance, Dashboard `Settings` nên có `binance_pay_id` nếu muốn hiện Cách 1 Binance Pay.
+  - Dashboard `Settings` nên có `binance_direct_address` riêng cho Cách 2 BEP20/on-chain; API Key/Secret chỉ dùng cho checker/API, không được nhập vào ô address.
 
 Lưu ý: Bot hiện chỉ dùng Supabase. Bot chỉ nên dùng `SUPABASE_SECRET_KEY` mới cho runtime Supabase. Không dùng `SUPABASE_SERVICE_ROLE_KEY` legacy nếu key đó đã bị lộ, và không dùng publishable/anon key cho Bot vì Bot cần thao tác stock/order/finance/RPC có quyền cao.
 
@@ -135,9 +142,26 @@ Kết quả mong đợi:
 - Query chạy thành công sau khi đã apply all-in-one.
 - JSON có nhóm `schema`, `queues`, `delivery`, `stock`, `settings`.
 
+Chạy kiểm tra Bot message templates:
+
+```sql
+select template_key, language, custom_emoji_id, enabled
+from public.bot_message_templates
+order by template_key, language
+limit 10;
+```
+
+Kết quả mong đợi:
+
+- Query chạy thành công.
+- Có các key như `welcome`, `shop_intro`, `sale_intro`, `support_panel`, `product_payment_options`, `quantity_quick_prompt`, `direct_payment_options`.
+- `sale_intro` có thể dùng custom emoji ID `6055192572056309981`.
+- Trong `/bot-messages`, thử thêm `{emoji:6055192572056309981}` vào đầu một dòng `body_text`; Bot sẽ render thành Telegram custom emoji khi gửi.
+
 ### Dashboard
 
 - Login admin thành công.
+- Mở `/bot-messages`, sửa thử một template không quan trọng, lưu thành công, rồi đổi lại.
 - Products:
   - tạo/sửa sản phẩm
   - nhập fallback icon và Telegram custom emoji ID

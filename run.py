@@ -10,7 +10,7 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, filters
 )
 from config import ADMIN_IDS, BOT_TOKEN
-from database import init_db
+from database import get_user_language, init_db
 from handlers.chat_logger import log_incoming_message
 from handlers.start import (
     start_command,
@@ -32,7 +32,8 @@ from handlers.shop import (
     handle_shop_text, process_deposit_amount,
     handle_withdraw_text, process_withdraw_amount, process_withdraw_bank, process_withdraw_account,
     handle_buy_quantity, show_order_detail,
-    select_payment_vnd, select_payment_usdt, select_sale_payment_vnd, select_sale_payment_usdt,
+    select_payment_vnd, select_payment_usdt, select_checkout_route,
+    select_sale_payment_vnd, select_sale_payment_usdt, select_sale_checkout_route,
     select_quick_quantity, prompt_manual_quantity, prompt_quick_quantity,
     select_sale_quick_quantity, prompt_sale_manual_quantity, prompt_sale_quick_quantity,
     select_direct_payment_vietqr, select_direct_payment_binance,
@@ -64,6 +65,7 @@ from handlers.admin import (
     admin_sold_by_user_start, admin_sold_by_user_search, handle_admin_sold_codes_text,
 )
 from sepay_checker import run_checker, init_checker_db
+from helpers.bot_messages import get_cached_common_button_label, warm_bot_button_labels
 from helpers.telegram_resilience import is_stale_callback_query_error
 
 def _env_positive_int(name: str, default: int) -> int:
@@ -106,6 +108,8 @@ async def post_init(application):
     if application.bot_data.get("_shop_post_init_done"):
         return
     application.bot_data["_shop_post_init_done"] = True
+    await warm_bot_button_labels("vi")
+    await warm_bot_button_labels("en")
 
     default_commands = [
         BotCommand("start", "Open bot"),
@@ -163,6 +167,27 @@ async def handle_application_error(update, context):
 
     exc_info = (type(error), error, error.__traceback__) if error else None
     logger.error("Unhandled exception while processing update", exc_info=exc_info)
+
+
+async def handle_unmatched_text(update, context):
+    text = (getattr(update.effective_message, "text", "") or "").strip()
+    user_id = getattr(update.effective_user, "id", None)
+    lang = await get_user_language(user_id) if user_id else "vi"
+    await warm_bot_button_labels(lang)
+
+    reply_actions = {
+        get_cached_common_button_label("reply.shop", lang): handle_shop_text,
+        get_cached_common_button_label("reply.balance", lang): handle_balance,
+        get_cached_common_button_label("reply.deposit", lang): handle_deposit_text,
+        get_cached_common_button_label("reply.withdraw", lang): handle_withdraw_text,
+        get_cached_common_button_label("reply.history", lang): handle_history_text,
+        get_cached_common_button_label("reply.support", lang): handle_support_text,
+        get_cached_common_button_label("reply.language", lang): handle_change_language,
+    }
+    handler = reply_actions.get(text)
+    if handler:
+        return await handler(update, context)
+    return await handle_buy_quantity(update, context)
 
 
 def setup_bot():
@@ -324,7 +349,7 @@ def setup_bot():
     app.add_handler(MessageHandler(filters.Regex("^🚪 Thoát Admin$"), handle_exit_admin))
 
     # Handler nhập số lượng mua: nhận cả số hợp lệ lẫn text sai để bot có thể nhắc lại trong cùng flow
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buy_quantity))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_unmatched_text))
 
     # User callbacks
     app.add_handler(CallbackQueryHandler(set_language, pattern="^set_lang_(vi|en)$"))
@@ -336,8 +361,10 @@ def setup_bot():
     app.add_handler(CallbackQueryHandler(show_sale_catalog, pattern="^sale(?:_\\d+)?$"))
     app.add_handler(CallbackQueryHandler(show_sale_product, pattern="^salebuy_\\d+$"))
     app.add_handler(CallbackQueryHandler(show_product, pattern="^buy_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_checkout_route, pattern="^payroute_(?:wallet_vnd|wallet_usdt|vietqr|binance)_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_vnd, pattern="^pay_vnd_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_payment_usdt, pattern="^pay_usdt_\\d+$"))
+    app.add_handler(CallbackQueryHandler(select_sale_checkout_route, pattern="^salepayroute_(?:wallet_vnd|wallet_usdt|vietqr|binance)_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_sale_payment_vnd, pattern="^salepay_vnd_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_sale_payment_usdt, pattern="^salepay_usdt_\\d+$"))
     app.add_handler(CallbackQueryHandler(select_quick_quantity, pattern="^buyqty_(?:vnd|usdt)_\\d+_\\d+$"))
